@@ -42,7 +42,7 @@ Build status (0.0.1):
 | A10 | Nothing unsaved is lost: closing a dirty tab, opening another folder, closing the window and quitting ask Save / Don't Save / Cancel. A file changed on disk reloads if it has no edits; with edits, the user is told, and saving asks before overwriting. Saving replaces a plain file atomically (temp file, fsync, rename, permissions kept) and writes symlinks, hard links and others' files in place. Line endings and a BOM are kept. Binary and non-UTF-8 files are refused, not mangled. | `files` / `document` / `workspace` tests. |
 | A11 | **Keys are VS Code's** (§8), all rebindable: **Settings ▸ Keyboard** records a shortcut per command (refusing one that is taken, with **Reset**), and `~/.config/kiled/keymap.toml` takes any binding, two-stroke ones included. **Keyboard Shortcuts…** (**⌘K ⌘S**) opens that file in Kiled. Changes apply when the window is focused again; the menus show the keys bound. | `keymap` / `config` / `settings_window` tests. |
 | A12 | **Settings…** (**⌘,**): Kil's five themes, sidebar opacity, font family and size, tab size, spaces or tabs, cursor blink; `config.toml` holds them and `[servers]` commands. **⌘= ⌘- ⌘0** zoom. | `settings` tests; manual. |
-| A13 | **Performance.** Idle CPU 0.0% with the cursor not blinking, < 1% blinking. A keystroke (edit, incremental reparse, highlighting a screenful) under 1 ms on a 50,000-line file. First frame within 200 ms of launch. | §5.4 [measured]. |
+| A13 | **Performance.** Idle CPU 0.0% with the cursor not blinking, < 1% blinking. A keystroke (edit, incremental reparse, highlighting a screenful) under 1 ms on average on a 50,000-line file. First frame within 200 ms of launch. | §5.4 [measured]. |
 | A14 | **Process hygiene.** Each language server runs in its own process group; stopping it (or its output closing) gives it 1 s, then kills the group, then reaps it. Quitting sends the groups SIGTERM; nothing outlives Kiled, a `kill -9` of Kiled included. | `client` tests (a fake server's background child dies with it); manual (§6.3). |
 | A15 | The release is signed with Developer ID, notarized and stapled; `spctl -a -vv` accepts it. | §11 |
 
@@ -242,7 +242,7 @@ bar, tabs and sidebar redraw without laying it out again.
 |---|---|---|
 | Idle CPU, cursor not blinking | 0.0% | **0.00%** over 30 s (`ps` CPU time) |
 | Idle CPU, cursor blinking | < 1% | **0.83%** |
-| Keystroke: edit + reparse + highlight a screenful | < 1 ms | **0.28 ms** avg (2.3k-line Rust file), **0.15 ms** (51k lines, 1.7 MB); worst 0.7 ms |
+| Keystroke: edit + reparse + highlight a screenful | < 1 ms avg | **0.28–0.33 ms** avg (2.3k-line Rust file), **0.14–0.15 ms** (51k lines, 1.7 MB); worst key ~1.5 ms |
 | Open a 51k-line Rust file (rope, indent detection, full parse) | — | **96 ms** |
 | First frame after launch, a Rust file open | ≤ 200 ms | **~126 ms** (log line) |
 | Memory, one file open | — | **~111 MB** RSS (mostly GPUI and Metal) |
