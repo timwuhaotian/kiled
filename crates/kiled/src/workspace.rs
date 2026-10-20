@@ -784,22 +784,30 @@ impl Workspace {
     pub fn open_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
         let (folders, files): (Vec<PathBuf>, Vec<PathBuf>) =
             paths.into_iter().partition(|path| path.is_dir());
-        for file in &files {
-            self.open_path(file, true, window, cx);
-        }
-        if let Some(folder) = folders.into_iter().next()
-            && Some(&folder) != self.folder.as_ref()
-        {
-            let editors = self.editors.clone();
-            self.confirm_unsaved(editors, window, cx, move |this, window, cx| {
-                this.remove_all(window, cx);
-                this.lsp.update(cx, Lsp::stop_all);
-                this.back.clear();
-                this.forward.clear();
-                this.set_folder(Some(folder), cx);
-                this.sidebar = true;
-            });
-        }
+        let open_files = move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+            for file in &files {
+                this.open_path(file, true, window, cx);
+            }
+        };
+        let Some(folder) = folders
+            .into_iter()
+            .next()
+            .filter(|folder| Some(folder) != self.folder.as_ref())
+        else {
+            open_files(self, window, cx);
+            return;
+        };
+        // The files come after the switch: switching closes the editors that are open.
+        let editors = self.editors.clone();
+        self.confirm_unsaved(editors, window, cx, move |this, window, cx| {
+            this.remove_all(window, cx);
+            this.lsp.update(cx, Lsp::stop_all);
+            this.back.clear();
+            this.forward.clear();
+            this.set_folder(Some(folder), cx);
+            this.sidebar = true;
+            open_files(this, window, cx);
+        });
     }
 
     fn reopen_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1708,6 +1716,36 @@ mod tests {
                 false,
                 "fn x() {}".to_owned()
             )
+        );
+    }
+
+    #[gpui::test]
+    fn opening_a_folder_and_a_file_together_should_keep_the_file_open(cx: &mut TestAppContext) {
+        let dir = scratch("folder-and-file");
+        let other = scratch("folder-and-file-other");
+        let (workspace, cx) = workspace(
+            Launch {
+                folder: Some(other),
+                ..Launch::default()
+            },
+            cx,
+        );
+        workspace.update_in(cx, |this, window, cx| {
+            this.open_paths(vec![dir.clone(), dir.join("notes.txt")], window, cx);
+        });
+        cx.run_until_parked();
+        let (folder, open) = workspace.read_with(cx, |this, cx| {
+            (
+                this.folder.clone(),
+                this.editors
+                    .iter()
+                    .filter_map(|editor| editor.read(cx).path().map(Path::to_owned))
+                    .collect::<Vec<_>>(),
+            )
+        });
+        assert_eq!(
+            (folder, open),
+            (Some(dir.clone()), vec![dir.join("notes.txt")])
         );
     }
 
