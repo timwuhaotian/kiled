@@ -1,0 +1,46 @@
+name: Bug report
+description: Something in Kiled doesn't work as it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Screenshots help.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a folder with ...
+        2. Press ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: macOS 27.0
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Kiled build
+      description: When you downloaded the DMG, or the commit you built from (`git rev-parse --short HEAD`).
+  - type: input
+    id: language
+    attributes:
+      label: Language and language server involved
+      placeholder: Rust, rust-analyzer 2026-10-18 / TypeScript 7.0 ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Run `RUST_LOG=debug /Applications/Kiled.app/Contents/MacOS/kiled` from a terminal and
+        paste what it prints around the problem (it includes the language servers' stderr).
+      render: text

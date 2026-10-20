@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    # Pinned exactly on purpose: pre-1.0, vendored with Kil's change, upgraded by hand with
+    # Kil (DESIGN.md §2, §12).
+    ignore:
+      - dependency-name: gpui
+    groups:
+      cargo:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

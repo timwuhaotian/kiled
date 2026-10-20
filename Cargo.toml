@@ -1,0 +1,70 @@
+[workspace]
+resolver = "3"
+members = ["crates/kiled-core", "crates/kiled"]
+# gpui 0.2.2 with Kil's change (vendor/gpui/KIL.md): a dependency, not a member.
+exclude = ["vendor"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+authors = ["timwuhaotian"]
+repository = "https://github.com/timwuhaotian/kiled"
+homepage = "https://github.com/timwuhaotian/kiled"
+readme = "README.md"
+keywords = ["editor", "macos", "gpui", "lsp", "tree-sitter"]
+categories = ["text-editors"]
+rust-version = "1.94"
+publish = false
+
+[workspace.dependencies]
+kiled-core = { path = "crates/kiled-core" }
+# Exact pin: pre-1.0, and the same vendored copy as Kil (DESIGN.md §2, §12).
+gpui = "=0.2.2"
+# LF-only lines: text is normalized on load, and LSP and tree-sitter count rows the same way.
+ropey = { version = "1.6", default-features = false, features = ["simd"] }
+unicode-width = "0.2"
+tree-sitter = "0.25"
+tree-sitter-language = "0.1"
+tree-sitter-rust = "0.24"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-json = "0.24"
+tree-sitter-yaml = "0.7"
+tree-sitter-toml-ng = "0.7"
+streaming-iterator = "0.1"
+ignore = "0.4"
+regex = "1"
+libc = "0.2.183"
+log = "0.4"
+thiserror = "2"
+anyhow = "1"
+env_logger = "0.11"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+redundant_clone = "deny"
+large_enum_variant = "deny"
+needless_collect = "deny"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+# A half-applied edit is worse than a crash: the file on disk is only ever replaced whole.
+panic = "abort"
+debug = "line-tables-only"

@@ -1,0 +1,3 @@
+# Import grouping needs `cargo +nightly fmt`; stable rustfmt ignores these two keys.
+group_imports = "StdExternalCrate"
+imports_granularity = "Crate"
