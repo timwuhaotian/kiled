@@ -573,35 +573,41 @@ pub fn move_lines(doc: &mut Document, up: bool) -> bool {
     })
 }
 
-/// Shift-Alt-Up / Shift-Alt-Down: the covered lines are duplicated; going down, the
-/// selections move onto the copy.
+/// Shift-Alt-Up / Shift-Alt-Down: the covered lines are duplicated, and the selections go
+/// with the copy in that direction: the upper one going up, the lower one going down.
 pub fn copy_lines(doc: &mut Document, down: bool) -> bool {
     let rope = doc.rope();
     let blocks = line_blocks(doc);
     let mut changes = Vec::new();
-    let mut moves: Vec<(Range<usize>, usize)> = Vec::new();
+    // Each block's chars, and how far into the text after it its selections land: by the
+    // copy's length going down, as the copy then follows the block.
+    let mut copies: Vec<(Range<usize>, usize)> = Vec::new();
     for block in &blocks {
         let text = block_text(rope, block.clone());
-        let len = len_chars(&text) + 1;
         let start = rope.line_to_char(block.start);
         let end = text::line_end(rope, block.end - 1);
         if down {
             changes.push(Change::insert(end, format!("\n{text}")));
-            moves.push((start..end + 1, len));
+            copies.push((start..end + 1, len_chars(&text) + 1));
         } else {
             changes.push(Change::insert(start, format!("{text}\n")));
+            copies.push((start..end + 1, 0));
         }
     }
     doc.transact(changes, EditKind::Other, |changes, before| {
         let mut after = before.clone();
         after.map(|selection| {
-            let extra = moves
+            let Some((block, onto)) = copies
                 .iter()
-                .find(|(range, _)| range.contains(&selection.start()))
-                .map_or(0, |(_, len)| *len);
+                .find(|(block, _)| block.contains(&selection.start()))
+            else {
+                return *selection;
+            };
+            // Both ends keep their place in the block, even one at the next line's start.
+            let base = edit::map(changes, block.start, Bias::Before) + onto;
             Selection {
-                anchor: edit::map(changes, selection.anchor, Bias::Before) + extra,
-                head: edit::map(changes, selection.head, Bias::Before) + extra,
+                anchor: base + (selection.anchor - block.start),
+                head: base + (selection.head - block.start),
                 ..*selection
             }
         });
@@ -1207,6 +1213,31 @@ mod tests {
         let mut doc = doc("a|b\nc");
         copy_lines(&mut doc, true);
         assert_eq!(shown(&doc), "ab\na|b\nc");
+    }
+
+    #[test]
+    fn copy_lines_should_select_just_the_copy_in_the_direction_copied() {
+        let copied = |marked: &str, down: bool| {
+            let mut doc = doc(marked);
+            copy_lines(&mut doc, down);
+            shown(&doc)
+        };
+        assert_eq!(
+            (
+                copied("[ab\n]cd\nef\n", true),
+                copied("ab\n[cd\n]ef\n", false),
+                copied("[ab]c\nxyz\n", false),
+                copied("[a]\nb\n|c\n", true),
+                copied("[a]\nb\n|c\n", false),
+            ),
+            (
+                "ab\n[ab\n]cd\nef\n".to_owned(),
+                "ab\n[cd\n]cd\nef\n".to_owned(),
+                "[ab]c\nabc\nxyz\n".to_owned(),
+                "a\n[a]\nb\nc\n|c\n".to_owned(),
+                "[a]\na\nb\n|c\nc\n".to_owned(),
+            )
+        );
     }
 
     #[test]
