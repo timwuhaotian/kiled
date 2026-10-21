@@ -21,6 +21,7 @@ The first version: a code editor and nothing else.
   hover, go to definition, Format Document. TypeScript uses TypeScript 7's own server.
 - **Find and replace**, **Go to File**, the **Command Palette**, **Go to Line**, Back and
   Forward.
-- **Files**: an explorer, tabs, atomic saves that keep permissions, links and line endings,
-  prompts before anything unsaved is closed, reloading files changed on disk, and the last
-  session reopened at launch.
+- **Files**: an explorer, tabs, atomic saves that keep permissions, group, ACLs, extended
+  attributes, links and line endings (read-only files are refused), prompts before anything
+  unsaved is closed, reloading files changed on disk, and the last session reopened at
+  launch.
