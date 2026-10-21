@@ -745,8 +745,8 @@ impl Editor {
 }
 
 /// A completion's extra edits as changes, keeping only those clear of the word being
-/// completed: the server placed them in the text as it was when it was asked, and only
-/// text before the word is sure to be unchanged since.
+/// completed (the server placed them in the text as it was when it was asked, and only
+/// text before the word is sure to be unchanged since) and the right way round.
 fn extra_edits(rope: &ropey::Rope, edits: &[protocol::TextEdit], start: usize) -> Vec<Change> {
     edits
         .iter()
@@ -754,7 +754,7 @@ fn extra_edits(rope: &ropey::Rope, edits: &[protocol::TextEdit], start: usize) -
             range: offset_of(rope, edit.start)..offset_of(rope, edit.end),
             text: edit.text.clone(),
         })
-        .filter(|change| change.range.end <= start)
+        .filter(|change| change.range.start <= change.range.end && change.range.end <= start)
         .collect()
 }
 

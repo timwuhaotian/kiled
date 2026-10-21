@@ -973,8 +973,12 @@ pub fn paste(doc: &mut Document, text: &str, whole_lines: bool) -> bool {
 }
 
 /// Applies edits from elsewhere (a formatter, a completion's extra edits), keeping the
-/// cursors where they were in the text around them.
+/// cursors where they were in the text around them. A set with a range backwards, past the
+/// end or overlapping another changes nothing: it was made for some other text.
 pub fn apply_edits(doc: &mut Document, changes: Vec<Change>) -> bool {
+    if !fits(&changes, doc.rope().len_chars()) {
+        return false;
+    }
     doc.transact(changes, EditKind::Other, |changes, before| {
         let mut after = before.clone();
         after.map(|selection| Selection {
@@ -984,6 +988,17 @@ pub fn apply_edits(doc: &mut Document, changes: Vec<Change>) -> bool {
         });
         after
     })
+}
+
+/// Whether `changes` can apply at once to a text of `len` chars: each range forwards and in
+/// the text, none overlapping another (inserts may share a place, as LSP allows).
+fn fits(changes: &[Change], len: usize) -> bool {
+    let mut ranges: Vec<&Range<usize>> = changes.iter().map(|change| &change.range).collect();
+    ranges.sort_by_key(|range| (range.start, range.end));
+    ranges
+        .iter()
+        .all(|range| range.start <= range.end && range.end <= len)
+        && ranges.windows(2).all(|pair| pair[0].end <= pair[1].start)
 }
 
 /// Replaces `range` with `text` and puts a single cursor after it: accepting a completion
@@ -1236,6 +1251,34 @@ mod tests {
                 "[ab]c\nabc\nxyz\n".to_owned(),
                 "a\n[a]\nb\nc\n|c\n".to_owned(),
                 "[a]\na\nb\n|c\nc\n".to_owned(),
+            )
+        );
+    }
+
+    #[test]
+    #[expect(clippy::reversed_empty_ranges, reason = "a server's backwards range")]
+    fn edits_from_a_server_should_apply_whole_or_not_at_all() {
+        let edit = |range: Range<usize>, text: &str| Change {
+            range,
+            text: text.into(),
+        };
+        let applied = |changes: Vec<Change>| {
+            let mut doc = doc("|hello world");
+            let changed = apply_edits(&mut doc, changes);
+            (changed, shown(&doc))
+        };
+        assert_eq!(
+            (
+                applied(vec![edit(5..2, "x")]),
+                applied(vec![edit(0..5, "a"), edit(3..8, "b")]),
+                applied(vec![edit(6..99, "x")]),
+                applied(vec![edit(5..5, "!"), edit(5..5, "?"), edit(0..5, "HI")]),
+            ),
+            (
+                (false, "|hello world".to_owned()),
+                (false, "|hello world".to_owned()),
+                (false, "|hello world".to_owned()),
+                (true, "HI|!? world".to_owned()),
             )
         );
     }
