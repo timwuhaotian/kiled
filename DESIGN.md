@@ -39,7 +39,7 @@ Build status (0.0.1):
 | A7 | Language servers for those languages start on the first file and stay per project root: rust-analyzer, TypeScript 7's own server (`tsc --lsp`, the project's install first; typescript-language-server for TypeScript ≤ 6), vscode-json-language-server, yaml-language-server, taplo. Diagnostics (pushed or pulled) as squiggles, a count in the status bar, marks on the scrollbar, **F8/⇧F8** to step through; completion as you type and on **⌃Space**; hover on rest and **⌘K ⌘I**; **F12**/⌘-click to the definition (in another file too); **⇧⌥F** formats. A server that isn't installed shows how to install it. | `servers` tests against real servers; screenshots. |
 | A8 | Find (**⌘F**) highlights every match as you type, says "3 of 12", steps with Enter/⇧Enter/⌘G/⇧⌘G, and toggles case, whole word and regex (**⌥⌘C/W/R**). Replace (**⌥⌘F**) replaces one or all, all as one undo step. | `find` tests. |
 | A9 | **⌘P** opens files of the folder by fuzzy name (`.gitignore` respected), **⇧⌘P** runs any command by name and shows its keys, **⌃G** goes to `line[:column]`. **⌃-** / **⌃⇧-** go back and forward across jumps. | `workspace` / `picker` tests. |
-| A10 | Nothing unsaved is lost: closing a dirty tab, opening another folder, closing the window and quitting ask Save / Don't Save / Cancel. A file changed on disk reloads if it has no edits; with edits, the user is told, and saving asks before overwriting. Saving replaces a plain file atomically (temp file, fsync, rename, permissions kept) and writes symlinks, hard links and others' files in place. Line endings and a BOM are kept. Binary and non-UTF-8 files are refused, not mangled. | `files` / `document` / `workspace` tests. |
+| A10 | Nothing unsaved is lost: closing a dirty tab, opening another folder, closing the window and quitting ask Save / Don't Save / Cancel. A file changed on disk reloads if it has no edits; with edits, the user is told, and saving asks before overwriting. Saving replaces a file atomically (temp file, fsync, rename) with its permissions, group, ACL and extended attributes, through a symlink that stays one; hard links and others' files are written in place and put back if that fails part way; a read-only file is refused. Line endings and a BOM are kept. Binary and non-UTF-8 files are refused, not mangled. | `files` / `document` / `workspace` tests. |
 | A11 | **Keys are VS Code's** (§8), all rebindable: **Settings ▸ Keyboard** records a shortcut per command (refusing one that is taken, with **Reset**), and `~/.config/kiled/keymap.toml` takes any binding, two-stroke ones included. **Keyboard Shortcuts…** (**⌘K ⌘S**) opens that file in Kiled. Changes apply when the window is focused again; the menus show the keys bound. | `keymap` / `config` / `settings_window` tests. |
 | A12 | **Settings…** (**⌘,**): Kil's five themes, sidebar opacity, font family and size, tab size, spaces or tabs, cursor blink; `config.toml` holds them and `[servers]` commands. **⌘= ⌘- ⌘0** zoom. | `settings` tests; manual. |
 | A13 | **Performance.** Idle CPU 0.0% with the cursor not blinking, < 1% blinking. A keystroke (edit, incremental reparse, highlighting a screenful) under 1 ms on average on a 50,000-line file. First frame within 200 ms of launch. | §5.4 [measured]. |
@@ -104,7 +104,7 @@ kiled/
 │  │  ├─ src/fuzzy.rs         Quick Open / palette scoring
 │  │  ├─ src/files.rs         load (refusing binary / non-UTF-8), atomic save, folder listing
 │  │  ├─ src/lsp/             client (process, threads, requests), protocol, finding servers
-│  │  ├─ src/sys.rs           the ONLY unsafe: killpg, waitid(WNOWAIT); each with SAFETY
+│  │  ├─ src/sys.rs           the ONLY unsafe: killpg, waitid(WNOWAIT), fcopyfile; each with SAFETY
 │  │  └─ tests/               latency (§5.4), real servers (§6.5)
 │  └─ kiled/                  GPUI app
 │     ├─ src/main.rs          launch, menus, app actions
@@ -186,11 +186,15 @@ bracket on a blank line outdents it.
 or not UTF-8. The document notes and removes a BOM and normalizes line endings (CRLF wins if
 most breaks were CRLF); `text_for_save` puts both back.
 
-`files::save` replaces a plain, single-link file we own whole: write a temp file beside it,
-copy its permissions, fsync, rename over it. A symlink, a hard-linked file, a file someone
-else owns, or one in a folder we can't write is written in place, so the link, other names
-and owner stay. A full disk while writing the temp file leaves the original untouched (it
-is never truncated first).
+`files::save` follows a symlink to the file it names (the link stays) and replaces that
+file whole: write a temp file beside it, give it the old file's group, extended attributes
+and permissions, fsync, rename over it, then copy the ACL across (`fcopyfile`; last, as an
+ACL may forbid deleting the temp file). A full disk while writing the temp file leaves the
+original untouched. A hard-linked file, one someone else owns or whose group we can't
+give, one an ACL keeps from being replaced, or one in a folder we can't write is written in
+place instead, so its names, owner and metadata stay: never truncated first, and put back
+from memory if the write fails part way. A file we may not write is refused ("it is
+read-only"); renaming over it would have worked, so that is asked first.
 
 Changes on disk are noticed when the window is focused (no watcher thread, as Kil): a clean
 editor reloads (one undoable step), a dirty one keeps its edits and is flagged; saving it
@@ -416,8 +420,8 @@ taplo = []                                            # or turn it off
 ```
 
 The Settings window writes one key per change (replacing its line or adding one above the
-first table, keeping comments), in place so a symlinked dotfile stays a symlink; nothing is
-written that wouldn't parse. Both files are re-read when the window is focused and their
+first table, keeping comments), saved as any file is (§4.4), so a symlinked dotfile stays a
+symlink; nothing is written that wouldn't parse. Both files are re-read when the window is focused and their
 mtime changed. Indentation is detected per file (the most common step between indented
 lines; tabs if most indented lines start with one); the settings are the fallback.
 

@@ -9,6 +9,7 @@ use std::{
 };
 
 use gpui::{App, AppContext as _, SharedString};
+use kiled_core::files;
 
 use crate::{
     editor, file_tree, find, keymap, picker, settings,
@@ -103,8 +104,8 @@ fn edit_settings_at(path: &Path, edit: impl FnOnce(&str) -> String) -> Result<Se
     let parsed = Settings::parse(&text)?;
     path.parent()
         .map_or(Ok(()), fs::create_dir_all)
-        // In place, not write-and-rename: config.toml is often a symlink into dotfiles.
-        .and_then(|()| fs::write(path, text))
+        // Saved as any file is: whole or not at all, and a symlink into dotfiles stays one.
+        .and_then(|()| files::save(path, &text))
         .map_err(|err| err.to_string())?;
     Ok(parsed)
 }
@@ -153,7 +154,7 @@ pub fn read_keymap() -> Result<Option<String>, String> {
 }
 
 /// Rewrites `keymap.toml` with `edit` applied to its text — the template if there is no file
-/// yet — and writes it in place, as `config.toml` is written.
+/// yet — and saves it as `config.toml` is saved.
 ///
 /// # Errors
 /// If the file can't be created or written.
@@ -167,7 +168,8 @@ fn update_keymap_at(path: &Path, edit: impl FnOnce(&str) -> String) -> io::Resul
     let text = edit(current.as_deref().unwrap_or(keymap::TEMPLATE));
     path.parent()
         .map_or(Ok(()), fs::create_dir_all)
-        .and_then(|()| fs::write(path, text))
+        .and_then(|()| files::save(path, &text))
+        .map(drop)
 }
 
 /// The path of `keymap.toml`, written first as a commented template if there is none.

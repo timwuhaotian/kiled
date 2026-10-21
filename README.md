@@ -41,8 +41,9 @@ to the language servers you already have.
   name, the **Command Palette**, **Go to Line**, and Back and Forward across jumps.
 - **Nothing unsaved is lost.** Closing a tab, opening another folder and quitting ask first.
   A file changed on disk reloads if you hadn't touched it, and saving over someone else's
-  change asks. Saves are atomic, keep permissions, symlinks and line endings, and binary
-  files are never opened as text.
+  change asks. Saves are atomic and keep permissions, ACLs, extended attributes,
+  symlinks and line endings; read-only files are refused, and binary files are never
+  opened as text.
 - **Comes back** with the folder, the tabs, their cursors and the window where you left them.
 - **Idle means idle**: no CPU at rest, and a keystroke costs a fraction of a millisecond even
   in a 50,000-line file.
@@ -166,7 +167,7 @@ taplo = []
 crates/
 ├─ kiled-core/  no UI: the text (a rope), selections, undo and every editing command, the
 │               tree-sitter syntax, search, files on disk, and the language server client.
-│               Unsafe code is two Darwin calls in src/sys.rs, each with a SAFETY comment.
+│               Unsafe code is three Darwin calls in src/sys.rs, each with a SAFETY comment.
 └─ kiled/       the GPUI app: window, editor element, find, Quick Open, explorer, keymap,
                 settings, and the window's language servers.
 vendor/gpui/    GPUI 0.2.2 with Kil's one change: an idle window stops asking for frames.
