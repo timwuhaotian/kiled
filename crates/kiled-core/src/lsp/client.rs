@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStderr, Command, Stdio},
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
+        Arc, Mutex, MutexGuard, PoisonError, TryLockError,
         atomic::{AtomicBool, AtomicI64, Ordering},
         mpsc,
     },
@@ -187,6 +187,11 @@ impl Client {
         self.shared.pid
     }
 
+    /// The server's output has closed: nothing more will be answered.
+    pub fn is_closed(&self) -> bool {
+        lock(&self.shared.pending).is_none()
+    }
+
     fn send(&self, message: &Value) {
         let _ = self.outgoing.send(message.to_string());
     }
@@ -261,7 +266,13 @@ impl Client {
     /// For quitting, when nothing can wait: the server and everything it started get
     /// SIGTERM now.
     pub fn terminate(&self) {
-        let reaped = lock(&self.shared.reaped);
+        // Held only while the server is being killed and reaped, which a server that won't
+        // die can make last: then it is ending already, and quitting doesn't wait for it.
+        let reaped = match self.shared.reaped.try_lock() {
+            Ok(reaped) => reaped,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return,
+        };
         if !*reaped {
             let _ = sys::kill_group(self.shared.pid, libc::SIGTERM);
         }
@@ -316,8 +327,10 @@ fn own(
             }
             let status = {
                 let mut reaped = lock(&shared.reaped);
-                // The leader isn't reaped yet, so this group is still the server's.
+                // The leader isn't reaped yet, so this group is still the server's, and its
+                // pid too: killed on its own as well, in case it left the group.
                 let _ = sys::kill_group(shared.pid, libc::SIGKILL);
+                let _ = child.kill();
                 let status = child.wait().ok().and_then(|status| status.code());
                 *reaped = true;
                 status
@@ -512,6 +525,44 @@ done
         // The server exited by itself on `exit`; its background child was killed with
         // the group.
         assert_eq!((exited, alive(leftover)), (Some(Some(0)), false));
+    }
+
+    #[test]
+    fn a_server_that_left_its_group_should_still_be_killed_and_quitting_not_wait() {
+        let dir = scratch("escaped");
+        // Joins its parent's process group, out of reach of a kill of its own, and stays.
+        let (client, mut events) = Client::start(
+            Path::new("/usr/bin/perl"),
+            &["-e", "setpgrp(0, getpgrp(getppid())) or die; sleep 30"],
+            &dir,
+            &OsString::from("/bin:/usr/bin"),
+        )
+        .unwrap();
+        let pid = i32::try_from(client.pid()).unwrap();
+        thread::sleep(Duration::from_millis(200));
+        client.shutdown();
+        let (done, exited) = mpsc::channel();
+        thread::spawn(move || {
+            let event = block_on(async {
+                while let Some(event) = events.next().await {
+                    if let Event::Exited { status, .. } = event {
+                        return Some(status);
+                    }
+                }
+                None
+            });
+            let _ = done.send(event);
+        });
+        // Once it is being killed and reaped, quitting must not wait for it.
+        thread::sleep(SHUTDOWN_WAIT + GRACE + Duration::from_millis(500));
+        let asked = Instant::now();
+        client.terminate();
+        let quit_in = asked.elapsed();
+        let exited = exited.recv_timeout(Duration::from_secs(10));
+        assert_eq!(
+            (quit_in < Duration::from_millis(100), exited, alive(pid)),
+            (true, Ok(Some(None)), false)
+        );
     }
 
     #[test]

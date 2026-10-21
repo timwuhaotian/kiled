@@ -43,7 +43,7 @@ Build status (0.0.1):
 | A11 | **Keys are VS Code's** (§8), all rebindable: **Settings ▸ Keyboard** records a shortcut per command (refusing one that is taken, with **Reset**), and `~/.config/kiled/keymap.toml` takes any binding, two-stroke ones included. **Keyboard Shortcuts…** (**⌘K ⌘S**) opens that file in Kiled. Changes apply when the window is focused again; the menus show the keys bound. | `keymap` / `config` / `settings_window` tests. |
 | A12 | **Settings…** (**⌘,**): Kil's five themes, sidebar opacity, font family and size, tab size, spaces or tabs, cursor blink; `config.toml` holds them and `[servers]` commands. **⌘= ⌘- ⌘0** zoom. | `settings` tests; manual. |
 | A13 | **Performance.** Idle CPU 0.0% with the cursor not blinking, < 1% blinking. A keystroke (edit, incremental reparse, highlighting a screenful) under 1 ms on average on a 50,000-line file. First frame within 200 ms of launch. | §5.4 [measured]. |
-| A14 | **Process hygiene.** Each language server runs in its own process group; stopping it (or its output closing) gives it 1 s, then kills the group, then reaps it. Quitting sends the groups SIGTERM; nothing outlives Kiled, a `kill -9` of Kiled included. | `client` tests (a fake server's background child dies with it); manual (§6.3). |
+| A14 | **Process hygiene.** Each language server runs in its own process group; stopping it (or its output closing) gives it 1 s, then kills the group and the server itself, then reaps it. Quitting sends the groups SIGTERM and never waits on a server; nothing outlives Kiled, a `kill -9` of Kiled included. A server that doesn't answer `initialize` in 30 s is stopped and says so. | `client` tests (a fake server's background child dies with it; one that leaves its group is still killed, without holding up quitting); `lsp` tests; manual (§6.3). |
 | A15 | The release is signed with Developer ID, notarized and stapled; `spctl -a -vv` accepts it. | §11 |
 
 ### Non-goals (0.0.1)
@@ -304,11 +304,13 @@ waiting requests by id, events to the app; on EOF fails what is waiting), a stde
 
 The owner waits for a stop request, the output closing, or the client going away; then gives
 the server 1 s to exit (polling with `waitid(…WNOWAIT)`, which doesn't reap), then
-`killpg(SIGKILL)` on the group, and only then reaps. **A pid isn't reused until it is
-reaped**, so the group signalled is always the server's — this is what makes killing the
-group safe, and what kills a server's own children (tsserver, rust-analyzer's proc-macro
-server) with it. Quitting can't wait, so it sends SIGTERM to every group still unreaped
-(checked under the same lock the reaper sets).
+`killpg(SIGKILL)` on the group and SIGKILL to the server's own pid (in case it left the
+group), and only then reaps. **A pid isn't reused until it is reaped**, so the group
+signalled is always the server's — this is what makes killing the group safe, and what
+kills a server's own children (tsserver, rust-analyzer's proc-macro server) with it.
+Quitting can't wait, so it sends SIGTERM to every group still unreaped, checked under the
+lock the reaper sets; a server whose reaper holds that lock is being killed already, and is
+passed over rather than waited for.
 
 Stopping politely is `shutdown` (≤ 1 s for the answer), `exit`, then the above. Quitting
 Kiled, closing the window, or a `kill -9` of Kiled leaves no server behind **[measured]**: the
@@ -320,7 +322,8 @@ The status bar shows the active file's server: `starting…`, its progress
 (`rust-analyzer: Indexing 45%`), or why it failed (`not found; install with …`; or
 `didn't start, install with … (exited (1): <its last stderr line>)` when it died before
 initializing, as a rustup proxy without its component does — the hint first, since the bar
-cuts long text at its end).
+cuts long text at its end). One that doesn't answer `initialize` within 30 s, or answers it
+with an error, is stopped and keeps that reason (`didn't answer in 30 s`).
 
 ### 6.5 Tests
 

@@ -8,10 +8,15 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     path::{Path, PathBuf},
+    pin::pin,
     sync::Arc,
+    time::Duration,
 };
 
-use futures::StreamExt;
+use futures::{
+    StreamExt,
+    future::{self, Either},
+};
 use gpui::{AppContext as _, Context, EventEmitter, SharedString, Task, WeakEntity};
 use kiled_core::{
     document::LspChange,
@@ -25,6 +30,9 @@ use crate::{editor::Editor, settings::Settings};
 
 /// A server's index in the window's list.
 pub type ServerId = usize;
+
+/// How long a server has to answer `initialize` before it is given up on.
+const INITIALIZE_WAIT: Duration = Duration::from_secs(30);
 
 /// What the servers say that the window shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -347,8 +355,14 @@ impl Lsp {
             "initialize",
             protocol::initialize(&server.root, initialization_options(spec.name)),
         );
+        let timeout = cx.background_executor().timer(INITIALIZE_WAIT);
         cx.spawn(async move |this, cx| {
-            let result = initialize.await;
+            let result = match future::select(pin!(initialize), timeout).await {
+                Either::Left((result, _)) => result,
+                Either::Right(_) => {
+                    Err(format!("didn't answer in {} s", INITIALIZE_WAIT.as_secs()))
+                }
+            };
             let _ = this.update(cx, |this, cx| this.initialized(id, result, cx));
         })
         .detach();
@@ -377,7 +391,14 @@ impl Lsp {
                     }
                 }
             }
-            Err(err) => server.state = State::Failed(err.into()),
+            // One that stopped is explained by its exit, which follows; one still running
+            // is stopped.
+            Err(err) => {
+                if !client.is_closed() {
+                    server.state = State::Failed(err.into());
+                    server.client = None;
+                }
+            }
         }
         self.pull_all(id, cx);
         cx.notify();
@@ -456,7 +477,8 @@ impl Lsp {
             Event::Exited { status, stderr } => {
                 server.client = None;
                 server.progress.clear();
-                if server.state != State::Stopped {
+                // A server stopped on purpose keeps the reason it was.
+                if matches!(server.state, State::Starting | State::Running) {
                     let last = stderr.lines().last().unwrap_or_default().trim();
                     let mut why = match status {
                         Some(code) => format!("exited ({code})"),
@@ -490,7 +512,96 @@ impl Lsp {
 
 #[cfg(test)]
 mod tests {
+    use gpui::TestAppContext;
+
     use super::*;
+
+    /// A window's servers, with one for `name` that hasn't started.
+    fn lsp_with(name: &str, state: State, cx: &mut TestAppContext) -> gpui::Entity<Lsp> {
+        let spec = language::SERVERS
+            .iter()
+            .find(|server| server.name == name)
+            .unwrap();
+        cx.new(|cx| {
+            let mut lsp = Lsp::new(cx);
+            lsp.path = Some("/bin:/usr/bin".into());
+            lsp.servers.push(Server {
+                candidates: vec![spec],
+                spec,
+                root: std::env::temp_dir(),
+                state,
+                client: None,
+                caps: protocol::Capabilities::default(),
+                docs: Vec::new(),
+                progress: BTreeMap::new(),
+                events_task: None,
+            });
+            lsp
+        })
+    }
+
+    #[gpui::test]
+    fn a_server_that_never_answers_should_be_stopped_and_keep_saying_why(cx: &mut TestAppContext) {
+        let mut settings = Settings::default();
+        settings
+            .servers
+            .insert("taplo".into(), vec!["/bin/sleep".into(), "5".into()]);
+        cx.update(|cx| cx.set_global(settings));
+        let lsp = lsp_with("taplo", State::Waiting, cx);
+        lsp.update(cx, |lsp, cx| lsp.start(0, cx));
+        let started = lsp.read_with(cx, |lsp, _| lsp.servers[0].state.clone());
+        cx.executor()
+            .advance_clock(INITIALIZE_WAIT + Duration::from_secs(1));
+        cx.run_until_parked();
+        lsp.update(cx, |lsp, cx| {
+            lsp.on_event(
+                0,
+                Event::Exited {
+                    status: None,
+                    stderr: String::new(),
+                },
+                cx,
+            );
+        });
+        let (state, running) = lsp.read_with(cx, |lsp, _| {
+            (
+                lsp.servers[0].state.clone(),
+                lsp.servers[0].client.is_some(),
+            )
+        });
+        assert_eq!(
+            (started, state, running),
+            (
+                State::Starting,
+                State::Failed("didn't answer in 30 s".into()),
+                false
+            )
+        );
+    }
+
+    #[gpui::test]
+    fn a_server_that_exits_while_starting_should_say_how_to_install_it(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(Settings::default()));
+        let lsp = lsp_with("rust-analyzer", State::Starting, cx);
+        lsp.update(cx, |lsp, cx| {
+            lsp.on_event(
+                0,
+                Event::Exited {
+                    status: Some(1),
+                    stderr: "error: Unknown binary 'rust-analyzer'".into(),
+                },
+                cx,
+            );
+        });
+        assert_eq!(
+            lsp.read_with(cx, |lsp, _| lsp.servers[0].state.clone()),
+            State::Failed(
+                "didn't start, install with `rustup component add rust-analyzer` \
+                 (exited (1): error: Unknown binary 'rust-analyzer')"
+                    .into()
+            )
+        );
+    }
 
     #[test]
     fn root_should_be_the_folder_else_the_nearest_marker() {
