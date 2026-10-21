@@ -24,6 +24,21 @@ to the language servers you already have.
 > **Status: early.** macOS only: Apple silicon, macOS 14 or later. It is tested on
 > macOS 27.
 
+## Size
+
+Kiled is one binary and its icon: a 4.8 MB download, 13.5 MB installed. Beside the editors you
+might be using, measured the same way:
+
+<p align="center">
+  <img src="docs/size.svg" width="800" alt="Installed size: Kiled 13.5 MB, TextMate 38.8 MB, BBEdit 68.8 MB, Sublime Text 146 MB, Nova 234 MB, Zed 269 MB, VS Code 920 MB, Cursor 1,039 MB">
+</p>
+
+<sub>The size of each installed app, as Finder counts it, from the latest Apple silicon download on
+its maker's site on 21 October 2026: Cursor 3.26.13, VS Code 1.143.0, Zed 1.24.4, Nova 14.1,
+Sublime Text build 4215, BBEdit 16.0.3 and TextMate 2.0.23. Nova, Sublime Text, BBEdit and
+TextMate ship only as universal apps, with Intel code too; without it they come to 135, 86, 47
+and 28 MB.</sub>
+
 ## Features
 
 - **VS Code's keys.** ⌘P, ⇧⌘P, ⌘D, ⌥↑↓, ⇧⌥↓, ⌘/, ⌘L, ⇧⌘K, ⌃G, F12, F8, ⇧⌥F, ⌘K ⌘W and the
