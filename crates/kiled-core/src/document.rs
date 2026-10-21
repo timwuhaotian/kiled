@@ -112,6 +112,14 @@ pub fn offset_of(rope: &Rope, position: Position) -> usize {
     rope.utf16_cu_to_char(units).clamp(start, end)
 }
 
+/// `text` without its BOM, and whether it had one.
+fn strip_bom(text: &str) -> (&str, bool) {
+    match text.strip_prefix('\u{feff}') {
+        Some(rest) => (rest, true),
+        None => (text, false),
+    }
+}
+
 /// Changes that undo or redo together.
 #[derive(Debug)]
 struct Step {
@@ -160,10 +168,7 @@ impl Document {
     /// taken out, and its indentation detected (else `fallback`).
     #[must_use]
     pub fn new(text: &str, language: Option<&'static Language>, fallback: Indent) -> Self {
-        let (text, bom) = match text.strip_prefix('\u{feff}') {
-            Some(rest) => (rest, true),
-            None => (text, false),
-        };
+        let (text, bom) = strip_bom(text);
         let (text, line_ending) = text::normalize(text);
         let rope = Rope::from(text);
         let indent = text::detect_indent(&rope.slice(..), fallback);
@@ -441,7 +446,8 @@ impl Document {
     /// saved. Selections stay where they were, as far as the new text reaches.
     pub fn reload(&mut self, text: &str) {
         self.commit_marked();
-        let (text, line_ending) = text::normalize(text.strip_prefix('\u{feff}').unwrap_or(text));
+        let (text, bom) = strip_bom(text);
+        let (text, line_ending) = text::normalize(text);
         if self.rope != text.as_str() {
             let all = 0..self.rope.len_chars();
             let len = len_chars(&text);
@@ -460,6 +466,7 @@ impl Document {
             );
         }
         self.line_ending = line_ending;
+        self.bom = bom;
         self.mark_saved();
     }
 
@@ -753,6 +760,18 @@ mod tests {
                 ("new\n".to_owned(), false, LineEnding::Crlf),
                 "old\n".to_owned()
             )
+        );
+    }
+
+    #[test]
+    fn reload_should_save_with_the_bom_the_file_has_now() {
+        let mut gained = doc("a\n");
+        gained.reload("\u{feff}b\n");
+        let mut lost = doc("\u{feff}a\n");
+        lost.reload("b\n");
+        assert_eq!(
+            (gained.text_for_save(), lost.text_for_save()),
+            ("\u{feff}b\n".to_owned(), "b\n".to_owned())
         );
     }
 }
