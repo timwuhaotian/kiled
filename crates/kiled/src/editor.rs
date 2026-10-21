@@ -470,9 +470,9 @@ impl Editor {
         if let (Some(server), Some(uri), false) = (self.server, self.uri(), changes.is_empty()) {
             self.lsp_version += 1;
             let version = self.lsp_version;
-            let rope = self.doc.rope().clone();
+            let text = self.doc.text_for_server();
             self.lsp.update(cx, |lsp, _| {
-                lsp.did_change(server, &uri, version, &changes, &rope);
+                lsp.did_change(server, &uri, version, &changes, &text);
             });
             self.pull_diagnostics(cx);
         }
@@ -1333,7 +1333,8 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.doc.marked().is_some() {
+        let composed = self.doc.marked().is_some();
+        if composed {
             // The composition ends: its preedit goes, and what it produced is typed.
             self.doc.cancel_marked();
         } else if let Some(range) = range {
@@ -1348,8 +1349,10 @@ impl EntityInputHandler for Editor {
             (Some(ch), None) => ops::type_char(&mut self.doc, ch),
             _ => ops::insert(&mut self.doc, text),
         };
-        if typed {
+        if typed || composed {
             self.edited(cx);
+        }
+        if typed {
             self.typed(text, cx);
         }
     }
@@ -1377,8 +1380,9 @@ impl EntityInputHandler for Editor {
             to_chars(selected.start)..to_chars(selected.end)
         });
         self.close_completion();
+        // A selection it replaces is deleted for real, so the server hears of it.
         self.doc.set_marked(range, text, selected);
-        self.moved(cx);
+        self.edited(cx);
     }
 
     fn bounds_for_range(
@@ -1511,6 +1515,28 @@ pub(crate) mod tests {
         assert_eq!(
             (typed, text(&editor, cx)),
             ("x中".to_owned(), "x".to_owned())
+        );
+    }
+
+    #[gpui::test]
+    fn ime_over_a_selection_should_tell_the_server_and_undo_to_the_selection(
+        cx: &mut TestAppContext,
+    ) {
+        let (editor, cx) = editor_with("hello world", None, cx);
+        let unsent = editor.update_in(cx, |editor, window, cx| {
+            editor
+                .doc
+                .set_selections(Selections::single(Selection::new(0, 5)));
+            editor.replace_and_mark_text_in_range(None, "n", None, window, cx);
+            let unsent = editor.doc.take_lsp_changes().len();
+            editor.replace_text_in_range(None, "你", window, cx);
+            unsent
+        });
+        let typed = text(&editor, cx);
+        cx.simulate_keystrokes("cmd-z");
+        assert_eq!(
+            (unsent, typed, text(&editor, cx)),
+            (0, "你 world".to_owned(), "hello world".to_owned())
         );
     }
 

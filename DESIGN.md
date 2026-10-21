@@ -159,8 +159,10 @@ without the cursor moving; never across a save. A revision number per state make
 exact: undoing back to the saved text is clean.
 
 **IME.** The preedit is in the text (so it is drawn in place and the IME's ranges hold) but
-in neither the undo history nor the LSP log. Committing takes the preedit out without a trace
-and types the result for real; an edit while composing commits first.
+in neither the undo history nor the LSP log, and the server is sent the text without it.
+Text a composition replaces (a selection typed over) is deleted for real as it starts, an
+undoable edit the server hears of. Committing takes the preedit out without a trace and
+types the result for real; an edit while composing commits first.
 
 ### 4.3 Commands
 

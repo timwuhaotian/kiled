@@ -470,6 +470,16 @@ impl Document {
         self.mark_saved();
     }
 
+    /// The text as the language server knows it: without the IME's preedit.
+    #[must_use]
+    pub fn text_for_server(&self) -> Rope {
+        let mut rope = self.rope.clone();
+        if let Some(marked) = &self.marked {
+            rope.remove(marked.clone());
+        }
+        rope
+    }
+
     /// Takes the changes the language server hasn't been sent.
     pub fn take_lsp_changes(&mut self) -> Vec<LspChange> {
         std::mem::take(&mut self.lsp_log)
@@ -494,41 +504,62 @@ impl Document {
     }
 
     /// Composes: `text` replaces `range` (else the preedit, else the primary selection) and
-    /// is marked as preedit, with `selected` (chars within `text`) selected. Nothing of this
-    /// reaches undo or the server until [`Self::commit_marked`].
+    /// is marked as preedit, with `selected` (chars within `text`) selected. Text it replaces
+    /// besides the old preedit is deleted as an edit, undoable and sent to the server; the
+    /// preedit itself reaches neither until [`Self::commit_marked`].
     pub fn set_marked(
         &mut self,
         range: Option<Range<usize>>,
         text: &str,
         selected: Option<Range<usize>>,
     ) {
+        let len = self.rope.len_chars();
         let range = range
             .or_else(|| self.marked.clone())
             .unwrap_or_else(|| self.selections.primary().range());
-        let range = range.start.min(self.rope.len_chars())..range.end.min(self.rope.len_chars());
-        let primary = *self.selections.primary();
-        self.apply(
-            &[Change {
-                range: range.clone(),
-                text: text.to_owned(),
-            }],
-            false,
+        let mut range = range.start.min(len)..range.end.min(len);
+        // The old preedit goes without a trace, leaving the text undo and the server know.
+        if let Some(old) = self.marked.take() {
+            self.apply(&[Change::delete(old.clone())], false);
+            let outside = |offset: usize| {
+                if offset <= old.start {
+                    offset
+                } else {
+                    offset.saturating_sub(old.len()).max(old.start)
+                }
+            };
+            range = outside(range.start)..outside(range.end);
+        }
+        let primary = self.selections.primary().with_range(range.clone());
+        self.set_selections(Selections::single(primary));
+        let at = range.start;
+        self.transact_now(
+            vec![Change::delete(range)],
+            EditKind::Typing,
+            |_, before| {
+                let mut after = before.clone();
+                after.map(|selection| selection.moved(at, false));
+                after
+            },
         );
-        let len = len_chars(text);
-        self.marked = (len > 0).then(|| range.start..range.start + len);
-        let selected = selected.unwrap_or(len..len);
+        self.apply(&[Change::insert(at, text)], false);
+        let chars = len_chars(text);
+        self.marked = (chars > 0).then(|| at..at + chars);
+        let selected = selected.unwrap_or(chars..chars);
         let cursor = Selection {
-            anchor: range.start + selected.start.min(len),
-            head: range.start + selected.end.min(len),
-            ..primary
+            anchor: at + selected.start.min(chars),
+            head: at + selected.end.min(chars),
+            goal: None,
+            id: primary.id,
         };
         self.set_selections(Selections::single(cursor));
     }
 
     /// Types the preedit for real: out of the text without a trace, then in as typing.
-    pub fn commit_marked(&mut self) {
+    /// Returns whether there was one.
+    pub fn commit_marked(&mut self) -> bool {
         let Some(marked) = self.marked.take() else {
-            return;
+            return false;
         };
         let text = self.rope.slice(marked.clone()).to_string();
         self.apply(&[Change::delete(marked.clone())], false);
@@ -548,6 +579,7 @@ impl Document {
                 after
             },
         );
+        true
     }
 
     /// Drops the preedit, as an IME cancelling its composition.
@@ -589,6 +621,18 @@ mod tests {
 
     fn text(doc: &Document) -> String {
         doc.rope().to_string()
+    }
+
+    /// What a server that had `original` holds after the changes `doc` logged.
+    fn server_text(original: &str, doc: &mut Document) -> String {
+        let mut replay = Rope::from(original);
+        for change in doc.take_lsp_changes() {
+            let start = offset_of(&replay, change.start);
+            let end = offset_of(&replay, change.end);
+            replay.remove(start..end);
+            replay.insert(start, &change.text);
+        }
+        replay.to_string()
     }
 
     #[test]
@@ -666,15 +710,7 @@ mod tests {
             1,
         ));
         type_at_cursors(&mut doc, "中");
-        let log = doc.take_lsp_changes();
-        let mut replay = Rope::from("ab\ncd\n");
-        for change in &log {
-            let start = offset_of(&replay, change.start);
-            let end = offset_of(&replay, change.end);
-            replay.remove(start..end);
-            replay.insert(start, &change.text);
-        }
-        assert_eq!(replay.to_string(), text(&doc));
+        assert_eq!(server_text("ab\ncd\n", &mut doc), text(&doc));
     }
 
     #[test]
@@ -746,6 +782,61 @@ mod tests {
             (composing, log.len(), text(&doc)),
             (("xzhong".to_owned(), 0), 1, "x".to_owned())
         );
+    }
+
+    #[test]
+    fn composing_over_a_selection_should_delete_it_undoably_and_tell_the_server() {
+        let mut doc = doc("hello world");
+        doc.set_selections(Selections::single(Selection::new(0, 5)));
+        doc.set_marked(None, "n", None);
+        let composing = (text(&doc), doc.text_for_server().to_string());
+        doc.set_marked(None, "你", None);
+        doc.commit_marked();
+        let committed = (text(&doc), server_text("hello world", &mut doc));
+        doc.undo();
+        assert_eq!(
+            (composing, committed, text(&doc), doc.is_dirty()),
+            (
+                ("n world".to_owned(), " world".to_owned()),
+                ("你 world".to_owned(), "你 world".to_owned()),
+                "hello world".to_owned(),
+                false
+            )
+        );
+    }
+
+    #[test]
+    fn a_composition_cancelled_over_a_selection_then_typed_should_undo_to_the_selection() {
+        let mut doc = doc("abcdef");
+        doc.set_selections(Selections::single(Selection::cursor(6)));
+        type_at_cursors(&mut doc, "X");
+        doc.set_selections(Selections::single(Selection::new(0, 6)));
+        doc.set_marked(None, "y", None);
+        doc.cancel_marked();
+        type_at_cursors(&mut doc, "Y");
+        let typed = (text(&doc), server_text("abcdef", &mut doc));
+        doc.undo();
+        let undone = text(&doc);
+        doc.undo();
+        assert_eq!(
+            (typed, undone, text(&doc)),
+            (
+                ("YX".to_owned(), "YX".to_owned()),
+                "abcdefX".to_owned(),
+                "abcdef".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn a_new_preedit_over_part_of_the_old_should_keep_the_server_in_step() {
+        let mut doc = doc("abc ");
+        doc.set_selections(Selections::single(Selection::cursor(4)));
+        doc.set_marked(None, "zhong", None);
+        doc.set_marked(Some(7..9), "X", None);
+        doc.set_marked(Some(2..5), "Y", None);
+        doc.commit_marked();
+        assert_eq!(server_text("abc ", &mut doc), text(&doc));
     }
 
     #[test]
