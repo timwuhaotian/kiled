@@ -21,7 +21,7 @@ Kiled is built on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/
 rendering, the same copy Kil uses) and [tree-sitter](https://tree-sitter.github.io), and talks
 to the language servers you already have.
 
-> **Status: early (0.0.1).** macOS only: Apple silicon, macOS 14 or later. It is tested on
+> **Status: early.** macOS only: Apple silicon, macOS 14 or later. It is tested on
 > macOS 27.
 
 ## Features
