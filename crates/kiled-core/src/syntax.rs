@@ -150,7 +150,7 @@ impl Syntax {
             self.cursor
                 .captures(&highlighter.query, self.tree.root_node(), RopeText(rope));
         while let Some((found, index)) = matches.next() {
-            let capture = found.captures[*index];
+            let capture = found.captures()[*index];
             let Some(Some(kind)) = highlighter.kinds.get(capture.index as usize) else {
                 continue;
             };

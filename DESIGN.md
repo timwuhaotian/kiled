@@ -69,7 +69,7 @@ Left out on purpose; each can come later without reshaping what exists.
 |---|---|---|
 | UI, GPU, text, input | **`gpui = "=0.2.2"`** from `vendor/gpui`, Kil's copy | Metal rendering, actions and key contexts (the rebindable keymap), `EntityInputHandler` (IME), cached views, transparent titlebar. The vendored copy carries Kil's one change: a window with nothing to draw stops its display link, so an idle window costs 0% CPU (`vendor/gpui/KIL.md`). |
 | Text | **`ropey` 1.6**, LF-only lines | O(log n) edits and line/char/UTF-16 conversions. Built without CR and Unicode line breaks: text is normalized on load, so the editor, tree-sitter and LSP count lines the same way. |
-| Syntax | **`tree-sitter` 0.25** and the grammars' own crates | Incremental reparsing and the grammars' highlight queries. |
+| Syntax | **`tree-sitter` 0.27** and the grammars' own crates | Incremental reparsing and the grammars' highlight queries. |
 | Search | **`regex`** | Unicode case folding without changing offsets. |
 | Project files | **`ignore`** | ripgrep's `.gitignore`-aware walk for Quick Open. |
 | LSP | Our own client over `serde_json` | Twelve messages are used; owning the process is the hard part (§6.3), not the types. No `lsp-types`. |
@@ -255,7 +255,9 @@ bar, tabs and sidebar redraw without laying it out again.
 
 Typing latency is `cargo test --release -p kiled-core --test latency -- --ignored
 --nocapture`. A pathological case is noted for the record: many simultaneous syntax errors
-make tree-sitter's error recovery cost ~2 ms per key on a 2k-line file.
+make tree-sitter's error recovery expensive. With an unclosed `((` added to every 25th line
+of that test's smaller file (2,561 lines, 265 error nodes), a key costs ~6.5 ms with
+tree-sitter 0.27 (~8 ms with 0.25).
 
 ---
 
@@ -469,6 +471,6 @@ material, scaled down beside a text cursor (an I-beam) drawn in the K's own grad
 | Opening a huge file blocks the UI (~100 ms per 50k lines) | Syntax and LSP off above 8 MB; open refused above 256 MB. | Users open files > 20 MB regularly → read and parse off the main thread. |
 | Highlight queries disagree on precedence | Specificity, then order (§5.2), tested per language. | A grammar's colors look wrong → fix in the query table, with a test. |
 | A server ignores stdin closing after Kiled is killed | Every server tested exits on EOF; groups are killed on every orderly exit. | One doesn't → a small supervisor process holding the groups. |
-| tree-sitter error recovery with many errors (~2 ms/key) | Within the frame budget. | Frame drops while typing → reparse off the main thread with a snapshot. |
+| tree-sitter error recovery with many errors (~6.5 ms/key, §5.4) | Within a 60 Hz frame. | Frame drops while typing → reparse off the main thread with a snapshot. |
 | Language servers change (TypeScript 7 dropped tsserver) | Ordered server candidates per language, version checks, `[servers]`. | A new default appears → one table entry. |
 | The cursor blink redraws the editor (0.83%) | Under the 1% budget. | Above it → the cursor as a cached view of its own, as Kil does. |
