@@ -43,12 +43,14 @@ pub struct FindBar {
     replacement: Entity<TextField>,
     replacing: bool,
     options: Query,
-    /// Every match, in order, as of `revision`.
+    /// Every match, in order, as of `searched`.
     pub(crate) matches: Vec<Range<usize>>,
     /// The match the editor's selection is on.
     pub(crate) current: Option<usize>,
     error: Option<SharedString>,
-    revision: Option<u64>,
+    /// The text the matches are of: its revision, and where the IME's preedit was in it
+    /// (which changes the text without a new revision).
+    searched: Option<(u64, Option<Range<usize>>)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -79,7 +81,7 @@ impl Editor {
                 matches: Vec::new(),
                 current: None,
                 error: None,
-                revision: None,
+                searched: None,
                 _subscriptions: subscriptions,
             });
         }
@@ -89,7 +91,7 @@ impl Editor {
         find.replacing |= replace;
         if let Some(seed) = seed {
             find.query.update(cx, |field, cx| field.set_text(&seed, cx));
-            find.revision = None;
+            find.searched = None;
         }
         let field = if replace && !find.query.read(cx).text().is_empty() {
             find.replacement.clone()
@@ -118,7 +120,7 @@ impl Editor {
         match event {
             FieldEvent::Changed(_) => {
                 if let Some(find) = &mut self.find {
-                    find.revision = None;
+                    find.searched = None;
                 }
                 // As VS Code does, the selection follows the first match from the cursor.
                 self.refresh_find(cx);
@@ -146,14 +148,14 @@ impl Editor {
 
     /// Finds again when the query, its options or the text changed.
     pub(crate) fn refresh_find(&mut self, cx: &mut Context<Self>) {
-        let revision = self.doc.revision();
+        let text = (self.doc.revision(), self.doc.marked());
         let Some(find) = &mut self.find else {
             return;
         };
-        if find.revision == Some(revision) {
+        if find.searched.as_ref() == Some(&text) {
             return;
         }
-        find.revision = Some(revision);
+        find.searched = Some(text);
         let query = Query {
             text: find.query.read(cx).text().to_owned(),
             ..find.options.clone()
@@ -223,7 +225,7 @@ impl Editor {
     fn toggle(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Query)) {
         if let Some(find) = &mut self.find {
             f(&mut find.options);
-            find.revision = None;
+            find.searched = None;
         }
         self.refresh_find(cx);
         cx.notify();

@@ -553,11 +553,12 @@ impl Editor {
         Some(text::offset_at_column(rope, line, col, self.tab_width()))
     }
 
-    /// The top-left of the cell at `offset`, in window coordinates.
+    /// The top-left of the cell at `offset` (clamped into the text), in window coordinates.
     pub(crate) fn point_of(&self, offset: usize) -> Option<Point<Pixels>> {
         let geometry = self.geometry?;
         let rope = self.doc.rope();
-        let line = rope.char_to_line(offset.min(rope.len_chars()));
+        let offset = offset.min(rope.len_chars());
+        let line = rope.char_to_line(offset);
         let col = text::column(rope, offset, self.tab_width());
         #[expect(
             clippy::cast_precision_loss,
@@ -1565,6 +1566,41 @@ pub(crate) mod tests {
         assert_eq!(
             (opened, unsent, text(&editor, cx)),
             (Some("x\ny\n".to_owned()), 0, "xzh\ny\n".to_owned())
+        );
+    }
+
+    #[gpui::test]
+    fn a_shrinking_preedit_should_leave_nothing_drawn_past_the_end(cx: &mut TestAppContext) {
+        let (editor, cx) = editor_with("hello world", None, cx);
+        cx.simulate_keystrokes("cmd-f");
+        cx.simulate_input("world");
+        editor.update_in(cx, |editor, window, cx| {
+            editor
+                .doc
+                .set_selections(Selections::single(Selection::new(0, 5)));
+            editor.replace_and_mark_text_in_range(None, "ni", None, window, cx);
+        });
+        cx.run_until_parked();
+        let shown = editor.update_in(cx, |editor, window, cx| {
+            editor.replace_and_mark_text_in_range(None, "", None, window, cx);
+            editor
+                .find
+                .as_ref()
+                .and_then(|find| find.matches.first().cloned())
+        });
+        cx.run_until_parked();
+        let found = editor.read_with(cx, |editor, _| {
+            (
+                editor
+                    .find
+                    .as_ref()
+                    .and_then(|find| find.matches.first().cloned()),
+                editor.point_of(99).is_some(),
+            )
+        });
+        assert_eq!(
+            (shown, found, text(&editor, cx)),
+            (Some(3..8), (Some(1..6), true), " world".to_owned())
         );
     }
 
