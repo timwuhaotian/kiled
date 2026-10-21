@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![macOS 14+ · Apple silicon](https://img.shields.io/badge/macOS-14%2B%20%C2%B7%20Apple%20silicon-lightgrey)
 
-A native macOS code editor written in Rust, and the sibling of the
+A native macOS code editor written in Rust (13.5MB), and the sibling of the
 [Kil](https://github.com/timwuhaotian/kil) terminal. It edits code and does nothing else: no
 terminal, no extensions, no git panel. It opens in a blink, uses no CPU while you think, and
 has VS Code's keys, so your fingers already know it.
