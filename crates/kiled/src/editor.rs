@@ -332,7 +332,7 @@ impl Editor {
             self.uri()?,
             self.language()?.lsp_id,
             self.lsp_version,
-            self.doc.rope().to_string(),
+            self.doc.text_for_server().to_string(),
         ))
     }
 
@@ -345,7 +345,7 @@ impl Editor {
             return;
         }
         let editor = cx.entity().downgrade();
-        let rope = self.doc.rope().clone();
+        let rope = self.doc.text_for_server();
         let version = self.lsp_version;
         self.server = self.lsp.update(cx, |lsp, cx| {
             lsp.attach(editor, language, &path, folder, version, &rope, cx)
@@ -399,7 +399,7 @@ impl Editor {
     /// # Errors
     /// If it has no path, or writing fails.
     pub fn save(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
-        self.doc.commit_marked();
+        self.commit_marked(cx);
         let path = self.path.clone().ok_or("an untitled file needs a name")?;
         let text = self.doc.text_for_save();
         let stamp =
@@ -492,14 +492,24 @@ impl Editor {
         cx.notify();
     }
 
-    fn edit(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Document) -> bool) {
+    /// Every edit goes through here: a composition ends first, and the server hears of each
+    /// change at once.
+    pub(crate) fn edit(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Document) -> bool) {
+        self.commit_marked(cx);
         if f(&mut self.doc) {
             self.edited(cx);
         }
     }
 
+    /// Ends an IME composition, typing what it composed.
+    pub(crate) fn commit_marked(&mut self, cx: &mut Context<Self>) {
+        if self.doc.commit_marked() {
+            self.edited(cx);
+        }
+    }
+
     fn motion(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Document)) {
-        self.doc.commit_marked();
+        self.commit_marked(cx);
         f(&mut self.doc);
         self.close_completion();
         self.hover = None;
@@ -895,7 +905,7 @@ impl Editor {
     /// Puts a single cursor (or selection) at `range` and scrolls it to the middle, as a
     /// jump does.
     pub fn select_and_center(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
-        self.doc.commit_marked();
+        self.commit_marked(cx);
         let len = self.doc.rope().len_chars();
         let range = range.start.min(len)..range.end.min(len);
         ops::select_range(&mut self.doc, range.clone());
@@ -946,7 +956,7 @@ impl Editor {
         let Some(offset) = self.offset_at(event.position) else {
             return;
         };
-        self.doc.commit_marked();
+        self.commit_marked(cx);
         self.close_completion();
         self.hover = None;
         let rope = self.doc.rope().clone();
@@ -1322,8 +1332,7 @@ impl EntityInputHandler for Editor {
     }
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.doc.commit_marked();
-        self.edited(cx);
+        self.commit_marked(cx);
     }
 
     fn replace_text_in_range(
@@ -1537,6 +1546,25 @@ pub(crate) mod tests {
         assert_eq!(
             (unsent, typed, text(&editor, cx)),
             (0, "你 world".to_owned(), "hello world".to_owned())
+        );
+    }
+
+    #[gpui::test]
+    fn a_click_that_ends_a_composition_should_tell_the_server(cx: &mut TestAppContext) {
+        let (editor, cx) = editor_with("x\ny\n", Some("a.rs"), cx);
+        let opened = editor.update_in(cx, |editor, window, cx| {
+            editor
+                .doc
+                .set_selections(Selections::single(Selection::cursor(1)));
+            editor.replace_and_mark_text_in_range(None, "zh", None, window, cx);
+            editor.lsp_document().map(|(.., text)| text)
+        });
+        let below = editor.read_with(cx, |editor, _| editor.point_of(3).unwrap());
+        cx.simulate_click(point(below.x + px(1.), below.y + px(2.)), Modifiers::none());
+        let unsent = editor.update(cx, |editor, _| editor.doc.take_lsp_changes().len());
+        assert_eq!(
+            (opened, unsent, text(&editor, cx)),
+            (Some("x\ny\n".to_owned()), 0, "xzh\ny\n".to_owned())
         );
     }
 

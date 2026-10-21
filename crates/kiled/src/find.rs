@@ -260,9 +260,7 @@ impl Editor {
         let Some(text) = self.replacement_for(&found, cx) else {
             return;
         };
-        if ops::replace_range(&mut self.doc, found, &text) {
-            self.edited(cx);
-        }
+        self.edit(cx, |doc| ops::replace_range(doc, found, &text));
         self.refresh_find(cx);
         self.select_match(true, true, cx);
     }
@@ -284,9 +282,7 @@ impl Editor {
                 })
             })
             .collect();
-        if ops::apply_edits(&mut self.doc, changes) {
-            self.edited(cx);
-        }
+        self.edit(cx, |doc| ops::apply_edits(doc, changes));
         self.refresh_find(cx);
     }
 

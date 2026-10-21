@@ -273,11 +273,14 @@ impl Editor {
         changes.extend(extra_edits(rope, &item.additional, start));
         let end = start + len_chars(&item.insert_text);
         let shift: isize = changes.iter().skip(1).map(Change::delta).sum();
-        if ops::apply_edits(&mut self.doc, changes) {
-            let cursor = end.saturating_add_signed(shift);
-            ops::select_range(&mut self.doc, cursor..cursor);
-            self.edited(cx);
-        }
+        self.edit(cx, |doc| {
+            let accepted = ops::apply_edits(doc, changes);
+            if accepted {
+                let cursor = end.saturating_add_signed(shift);
+                ops::select_range(doc, cursor..cursor);
+            }
+            accepted
+        });
         let resolve = item.additional.is_empty()
             && self.server.is_some_and(|server| {
                 self.lsp
@@ -318,13 +321,11 @@ impl Editor {
                 return;
             }
             let _ = this.update(cx, |this, cx| {
-                if this.doc.revision() != revision {
+                if this.doc.revision() != revision || this.doc.marked().is_some() {
                     return;
                 }
                 let changes = extra_edits(this.doc.rope(), &edits, start);
-                if ops::apply_edits(&mut this.doc, changes) {
-                    this.edited(cx);
-                }
+                this.edit(cx, |doc| ops::apply_edits(doc, changes));
             });
         })
         .detach();
@@ -535,6 +536,7 @@ impl Editor {
         let (Some(server), Some(uri)) = (self.server, self.uri()) else {
             return;
         };
+        self.commit_marked(cx);
         let indent = self.doc.indent();
         let Some(request) = self.lsp.read(cx).request(
             server,
@@ -557,8 +559,9 @@ impl Editor {
                         return;
                     }
                 };
-                // Edits for an older text would land in the wrong places.
-                if this.doc.revision() != revision {
+                // Edits for an older text, or one without the IME's preedit, would land in
+                // the wrong places.
+                if this.doc.revision() != revision || this.doc.marked().is_some() {
                     return;
                 }
                 let rope = this.doc.rope();
@@ -569,9 +572,7 @@ impl Editor {
                         text: edit.text.clone(),
                     })
                     .collect();
-                if ops::apply_edits(&mut this.doc, changes) {
-                    this.edited(cx);
-                }
+                this.edit(cx, |doc| ops::apply_edits(doc, changes));
             });
         })
         .detach();
