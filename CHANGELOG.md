@@ -6,6 +6,10 @@ versions below are how we track releases, and match `Cargo.toml` and the app's I
 
 ## Unreleased
 
+- **Tabs** show their file's full path when the pointer rests on them.
+- **Go to File** and the **Command Palette** open any file on the Mac by its path: type
+  `~/.npmrc` or `/etc/hosts`, with or without a folder open.
+
 ## 0.0.1 — 2026-10-21
 
 The first version: a code editor and nothing else.

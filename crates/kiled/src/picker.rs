@@ -1,5 +1,6 @@
 //! The Quick Open box, as VS Code has it: files (Cmd-P), commands after `>` (Cmd-Shift-P)
-//! and a line after `:` (Ctrl-G) (DESIGN.md §7).
+//! and a line after `:` (Ctrl-G) (DESIGN.md §7). A path starting with `~` or `/` opens any
+//! file on the Mac, after `>` too.
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -12,6 +13,7 @@ use kiled_core::fuzzy;
 
 use crate::{
     keymap::{self, Command},
+    settings,
     text_field::{FieldEvent, TextField},
     theme::Theme,
 };
@@ -37,7 +39,7 @@ const ROW_HEIGHT: f32 = 26.;
 /// What was chosen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PickerEvent {
-    /// A file, relative to the folder.
+    /// A file, relative to the folder, or absolute when a path was typed.
     Open(PathBuf),
     Run(Command),
     /// A line, 1-based, and a column if typed (`:12:5`).
@@ -48,18 +50,37 @@ pub enum PickerEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     Files,
+    Path,
     Commands,
     Line,
 }
 
 fn mode_of(query: &str) -> (Mode, &str) {
-    if let Some(rest) = query.strip_prefix('>') {
+    let (mode, rest) = if let Some(rest) = query.strip_prefix('>') {
         (Mode::Commands, rest.trim_start())
     } else if let Some(rest) = query.strip_prefix(':') {
         (Mode::Line, rest.trim())
     } else {
         (Mode::Files, query.trim())
+    };
+    // No project file or command title starts with these, so a path typed after `>` opens
+    // as well.
+    if mode != Mode::Line && rest.starts_with(['~', '/']) {
+        (Mode::Path, rest.trim())
+    } else {
+        (mode, rest)
     }
+}
+
+/// The file a typed path names, canonical as the command line opens it, so a file is open
+/// once however it was reached.
+fn file_at(text: &str) -> Option<PathBuf> {
+    let path = settings::expand_home(text);
+    if !path.is_absolute() {
+        return None;
+    }
+    let path = path.canonicalize().ok()?;
+    path.is_file().then_some(path)
 }
 
 /// `12` or `12:5` as a line and column.
@@ -78,6 +99,8 @@ pub struct Picker {
     lines: usize,
     /// Matches as indices into the files or commands, with the matched chars.
     matches: Vec<(usize, Vec<usize>)>,
+    /// The file a typed path names.
+    found: Option<PathBuf>,
     selected: usize,
     scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
@@ -103,7 +126,7 @@ impl Picker {
     ) -> Self {
         let query = cx.new(|cx| {
             let mut field = TextField::new("", window, cx)
-                .with_placeholder("Search files by name, > for commands, : for a line");
+                .with_placeholder("Search files by name or path, > for commands, : for a line");
             field.type_text(prefix, cx);
             field
         });
@@ -123,6 +146,7 @@ impl Picker {
             commands,
             lines,
             matches: Vec::new(),
+            found: None,
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
@@ -159,7 +183,7 @@ impl Picker {
                 .iter()
                 .map(|(command, _)| command.title().to_owned())
                 .collect(),
-            Mode::Line => Vec::new(),
+            Mode::Path | Mode::Line => Vec::new(),
         };
         let mut scored: Vec<(i64, usize, Vec<usize>)> = candidates
             .iter()
@@ -176,6 +200,11 @@ impl Picker {
             .into_iter()
             .map(|(_, index, positions)| (index, positions))
             .collect();
+        self.found = if mode == Mode::Path {
+            file_at(query)
+        } else {
+            None
+        };
         self.selected = 0;
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
@@ -210,6 +239,7 @@ impl Picker {
                 .get(self.selected)
                 .and_then(|(index, _)| self.files.get(*index))
                 .map(|path| PickerEvent::Open(path.clone())),
+            Mode::Path => self.found.clone().map(PickerEvent::Open),
             Mode::Commands => self
                 .matches
                 .get(self.selected)
@@ -227,6 +257,20 @@ impl Picker {
     }
 
     fn rows(&self, mode: Mode) -> Vec<(SharedString, SharedString, Vec<usize>)> {
+        if mode == Mode::Path {
+            return self
+                .found
+                .iter()
+                .map(|path| {
+                    let name = path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let folder = path.parent().map(settings::abbreviate_home);
+                    (name.into(), folder.unwrap_or_default().into(), Vec::new())
+                })
+                .collect();
+        }
         self.matches
             .iter()
             .map(|(index, positions)| match mode {
@@ -249,7 +293,7 @@ impl Picker {
                         name_positions,
                     )
                 }
-                Mode::Commands | Mode::Line => {
+                Mode::Commands | Mode::Line | Mode::Path => {
                     let (command, keys) = &self.commands[*index];
                     (command.title().into(), keys.clone(), positions.clone())
                 }
@@ -283,6 +327,7 @@ impl Render for Picker {
         };
         let text = self.query.read(cx).text().to_owned();
         let (mode, query) = mode_of(&text);
+        let rows = self.rows(mode);
         let list: AnyElement = if mode == Mode::Line {
             let hint = match parse_line(query) {
                 Some((line, Some(column))) => format!("Go to line {line}, column {column}"),
@@ -295,19 +340,18 @@ impl Render for Picker {
                 .text_color(colors.muted)
                 .child(hint)
                 .into_any_element()
-        } else if self.matches.is_empty() {
+        } else if rows.is_empty() {
             div()
                 .px_3()
                 .py_2()
                 .text_color(colors.muted)
-                .child(if mode == Mode::Files && self.files.is_empty() {
-                    "Open a folder to search its files"
-                } else {
-                    "No matching results"
+                .child(match mode {
+                    Mode::Path => "No file at this path",
+                    Mode::Files if self.files.is_empty() => "Open a folder to search its files",
+                    _ => "No matching results",
                 })
                 .into_any_element()
         } else {
-            let rows = self.rows(mode);
             let selected = self.selected;
             let count = rows.len();
             let picker = cx.entity();
@@ -431,6 +475,43 @@ mod tests {
                 (Mode::Line, "12")
             ]
         );
+    }
+
+    #[test]
+    fn a_path_should_be_one_with_or_without_the_command_prefix() {
+        assert_eq!(
+            [
+                mode_of("~/.npmrc"),
+                mode_of("/etc/hosts "),
+                mode_of("> ~/.npmrc"),
+                mode_of(":~")
+            ],
+            [
+                (Mode::Path, "~/.npmrc"),
+                (Mode::Path, "/etc/hosts"),
+                (Mode::Path, "~/.npmrc"),
+                (Mode::Line, "~")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_path_should_name_a_file_or_nothing() {
+        let dir = std::env::temp_dir().join(format!("kiled-picker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("notes.txt"), "hello\n").unwrap();
+        let file = dir.join("notes.txt").canonicalize().unwrap();
+        let typed = |path: PathBuf| path.to_string_lossy().into_owned();
+        assert_eq!(
+            [
+                file_at(&typed(dir.join("notes.txt"))),
+                file_at(&typed(dir.join("missing.txt"))),
+                file_at(&typed(dir.clone())),
+                file_at("~nobody/notes.txt"),
+            ],
+            [Some(file), None, None, None]
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

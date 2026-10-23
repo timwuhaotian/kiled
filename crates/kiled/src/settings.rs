@@ -115,6 +115,17 @@ pub fn abbreviate_home(path: &Path) -> String {
     }
 }
 
+/// A typed path with a leading `~` as `$HOME`.
+pub fn expand_home(text: &str) -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    match (home, text.strip_prefix('~')) {
+        (Some(home), Some(rest)) if rest.is_empty() || rest.starts_with('/') => {
+            home.join(rest.trim_start_matches('/'))
+        }
+        _ => PathBuf::from(text),
+    }
+}
+
 /// `text` with `key = value`: the line assigning `key` replaced, else one added before the
 /// first table (so it stays a top-level key). Other lines, comments included, are kept.
 pub fn set_key(text: &str, key: &str, value: &toml::Value) -> String {
@@ -180,6 +191,25 @@ pub fn config_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_leading_tilde_should_be_home() {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert_eq!(
+            [
+                expand_home("~/.npmrc"),
+                expand_home("~"),
+                expand_home("~nobody/x"),
+                expand_home("/etc/hosts")
+            ],
+            [
+                home.join(".npmrc"),
+                home,
+                PathBuf::from("~nobody/x"),
+                PathBuf::from("/etc/hosts")
+            ]
+        );
+    }
 
     #[test]
     fn parse_should_keep_defaults_for_missing_keys() {

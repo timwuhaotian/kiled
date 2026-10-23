@@ -869,14 +869,14 @@ impl Workspace {
         let event = event.clone();
         self.close_picker(window, cx);
         match event {
-            PickerEvent::Open(relative) => {
-                let Some(folder) = self.folder.clone() else {
-                    return;
+            PickerEvent::Open(path) => {
+                // A typed path is absolute, and `join` keeps it as it is.
+                let path = match &self.folder {
+                    Some(folder) => folder.join(path),
+                    None => path,
                 };
                 let here = self.location(cx);
-                if self
-                    .open_path(&folder.join(relative), true, window, cx)
-                    .is_some()
+                if self.open_path(&path, true, window, cx).is_some()
                     && let Some(here) = here
                 {
                     self.back.push(here);
@@ -1220,6 +1220,8 @@ impl Workspace {
                 let editor = editor.read(cx);
                 let active = Some(index) == self.active;
                 let dirty = editor.is_dirty();
+                let path: Option<SharedString> =
+                    editor.path().map(|path| path.display().to_string().into());
                 let close = div()
                     .id(("close-tab", index))
                     .size(px(16.))
@@ -1267,6 +1269,9 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.activate(index, window, cx);
                     }))
+                    .when_some(path, |tab, path| {
+                        tab.tooltip(move |_, cx| cx.new(|_| Tooltip(path.clone())).into())
+                    })
                     .child(editor.title())
                     .child(close)
                     .into_any_element()
@@ -1404,6 +1409,30 @@ impl Workspace {
             .child(row(Command::Palette))
             .child(row(Command::NewFile))
             .child(row(Command::ToggleSidebar))
+    }
+}
+
+/// A tab's file, in full, under the pointer.
+struct Tooltip(SharedString);
+
+impl Render for Tooltip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.global::<Theme>();
+        // Below the pointer rather than under it.
+        div().pt_5().child(
+            div()
+                .debug_selector(|| "tooltip".to_owned())
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .border_1()
+                .border_color(theme.divider)
+                .bg(theme.popover_bg)
+                .shadow_md()
+                .text_size(px(12.))
+                .text_color(theme.chrome_text)
+                .child(self.0.clone()),
+        )
     }
 }
 
@@ -1594,6 +1623,62 @@ mod tests {
                 .and_then(|editor| editor.read(cx).path().map(Path::to_owned))
         });
         assert_eq!(opened, Some(dir.join("src/main.rs")));
+    }
+
+    #[gpui::test]
+    fn a_typed_path_should_open_a_file_outside_the_folder(cx: &mut TestAppContext) {
+        let dir = scratch("typed-path");
+        let outside = scratch("typed-path-outside").join("notes.txt");
+        let (workspace, cx) = workspace(Launch::default(), cx);
+        let opened = |cx: &mut VisualTestContext| {
+            workspace.read_with(cx, |this, cx| {
+                this.active_editor()
+                    .and_then(|editor| editor.read(cx).path().map(Path::to_owned))
+            })
+        };
+        // With no folder open, and from the command palette's `>`.
+        cx.simulate_keystrokes("cmd-shift-p");
+        cx.simulate_input(&outside.to_string_lossy());
+        cx.simulate_keystrokes("enter");
+        let from_palette = opened(cx);
+        workspace.update_in(cx, |this, window, cx| {
+            this.open_paths(vec![dir.clone()], window, cx);
+        });
+        cx.simulate_keystrokes("cmd-p");
+        cx.simulate_input(&dir.join("src/main.rs").to_string_lossy());
+        cx.simulate_keystrokes("enter");
+        assert_eq!(
+            [from_palette, opened(cx)],
+            [
+                Some(outside.canonicalize().unwrap()),
+                Some(dir.join("src/main.rs").canonicalize().unwrap())
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn a_tab_should_show_its_path_under_the_pointer(cx: &mut TestAppContext) {
+        let dir = scratch("tab-tooltip");
+        let (_, cx) = workspace(
+            Launch {
+                files: vec![SavedFile {
+                    path: dir.join("notes.txt"),
+                    line: 1,
+                    column: 1,
+                }],
+                ..Launch::default()
+            },
+            cx,
+        );
+        let tab = gpui::point(px(TRAFFIC_LIGHTS + 20.), px(TOP_BAR / 2.));
+        cx.simulate_mouse_move(tab, None, gpui::Modifiers::none());
+        let before = cx.debug_bounds("tooltip");
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(
+            (before.is_some(), cx.debug_bounds("tooltip").is_some()),
+            (false, true)
+        );
     }
 
     #[gpui::test]
