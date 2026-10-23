@@ -10,7 +10,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use gpui::{
@@ -27,7 +27,7 @@ use crate::{
     file_tree::{FileTree, TreeEvent},
     keymap::{self, Command},
     lsp::{Lsp, LspEvent},
-    picker::{Picker, PickerEvent},
+    picker::{Files, Picker, PickerEvent},
     session::{SavedFile, SavedWindow, Session, Store},
     settings::{Settings, abbreviate_home},
     theme::Theme,
@@ -41,6 +41,7 @@ actions!(
         Save,
         SaveAs,
         SaveAll,
+        RevertFile,
         CloseEditor,
         CloseAllEditors,
         ReopenClosedEditor,
@@ -80,6 +81,8 @@ const SAVE_INTERVAL: Duration = Duration::from_secs(2);
 const PROJECT_FILE_LIMIT: usize = 200_000;
 /// The folder is listed again when the window comes back, at most this often.
 const RESCAN_INTERVAL: Duration = Duration::from_secs(10);
+/// Files opened lately that Quick Open lists first.
+const RECENT_LIMIT: usize = 30;
 
 /// What a launch opens.
 #[derive(Clone, Debug, Default)]
@@ -95,6 +98,25 @@ pub struct Launch {
 struct Location {
     path: PathBuf,
     offset: usize,
+}
+
+/// Where listing the folder's files for Quick Open stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Listing {
+    /// Not since the folder was set.
+    Never,
+    /// Under way, since then.
+    Running(Instant),
+    /// Finished; it started then.
+    Done(Instant),
+}
+
+/// What the window's frame shows, set again only when it changes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TitleBar {
+    title: SharedString,
+    /// macOS's edited mark: a tab has unsaved changes.
+    edited: bool,
 }
 
 /// Theme colors copied out so `cx` stays free for listeners while rendering.
@@ -144,7 +166,9 @@ pub struct Workspace {
     /// The folder's files for Quick Open, relative to it.
     project_files: Arc<Vec<PathBuf>>,
     files_task: Option<Task<()>>,
-    scanned: Option<std::time::Instant>,
+    listing: Listing,
+    /// Files opened lately, the latest first, for Quick Open.
+    recent: Vec<PathBuf>,
     sidebar: bool,
     notices: Vec<SharedString>,
     config: config::Stamp,
@@ -154,7 +178,7 @@ pub struct Workspace {
     store: Option<Store>,
     save_task: Option<Task<()>>,
     frame: Option<SavedWindow>,
-    window_title: SharedString,
+    titlebar: TitleBar,
     /// Font size from the config file, for Reset Zoom.
     base_font_size: f32,
     blink: Option<Task<()>>,
@@ -210,10 +234,16 @@ impl Workspace {
                 this.notices.push(message.clone());
                 cx.notify();
             }),
-            cx.subscribe_in(&tree, window, |this, _, event: &TreeEvent, window, cx| {
-                let TreeEvent::Open(path) = event;
-                this.open_path(path, true, window, cx);
-            }),
+            cx.subscribe_in(
+                &tree,
+                window,
+                |this, _, event: &TreeEvent, window, cx| match event {
+                    TreeEvent::Open(path) => {
+                        this.open_path(path, true, window, cx);
+                    }
+                    TreeEvent::Dismiss => this.focus_editor(window, cx),
+                },
+            ),
         ];
         let mut this = Self {
             focus_handle: cx.focus_handle(),
@@ -226,7 +256,8 @@ impl Workspace {
             picker: None,
             project_files: Arc::new(Vec::new()),
             files_task: None,
-            scanned: None,
+            listing: Listing::Never,
+            recent: Vec::new(),
             sidebar: launch.sidebar,
             notices,
             config: config::stamp(),
@@ -236,7 +267,7 @@ impl Workspace {
             store: None,
             save_task: None,
             frame: Some(SavedWindow::of(window.window_bounds())),
-            window_title: SharedString::default(),
+            titlebar: TitleBar::default(),
             base_font_size: f32::from(cx.global::<Settings>().font_size),
             blink: None,
             close_confirmed: false,
@@ -271,7 +302,7 @@ impl Workspace {
         self.folder.clone_from(&folder);
         self.tree.update(cx, |tree, cx| tree.set_root(folder, cx));
         self.project_files = Arc::new(Vec::new());
-        self.scanned = None;
+        self.listing = Listing::Never;
         self.scan_project(cx);
         self.schedule_save(cx);
         cx.notify();
@@ -282,18 +313,26 @@ impl Workspace {
         let Some(root) = self.folder.clone() else {
             return;
         };
-        if self
-            .scanned
-            .is_some_and(|scanned| scanned.elapsed() < RESCAN_INTERVAL)
-        {
+        let started = match self.listing {
+            Listing::Running(at) | Listing::Done(at) => Some(at),
+            Listing::Never => None,
+        };
+        if started.is_some_and(|at| at.elapsed() < RESCAN_INTERVAL) {
             return;
         }
-        self.scanned = Some(std::time::Instant::now());
+        let now = Instant::now();
+        self.listing = Listing::Running(now);
         let scan =
             cx.background_spawn(async move { files::list_project(&root, PROJECT_FILE_LIMIT) });
         self.files_task = Some(cx.spawn(async move |this, cx| {
             let files = scan.await;
-            let _ = this.update(cx, |this, _| this.project_files = Arc::new(files));
+            let _ = this.update(cx, |this, cx| {
+                this.listing = Listing::Done(now);
+                if *this.project_files != files {
+                    this.project_files = Arc::new(files);
+                }
+                this.feed_picker(cx);
+            });
         }));
     }
 
@@ -351,6 +390,12 @@ impl Workspace {
         let subscription = cx.subscribe_in(&editor, window, Self::on_editor_event);
         self.editor_subscriptions
             .insert(editor.entity_id(), subscription);
+        // Opened but not yet in front (the last session's files): the least recent.
+        if let Some(path) = editor.read(cx).path()
+            && !self.recent.iter().any(|recent| recent == path)
+        {
+            self.recent.push(path.to_owned());
+        }
         let index = self.active.map_or(self.editors.len(), |active| active + 1);
         self.editors.insert(index, editor);
         if let Some(active) = self.active
@@ -368,6 +413,11 @@ impl Workspace {
         };
         self.active = Some(index);
         let path = editor.read(cx).path().map(Path::to_owned);
+        if let Some(path) = &path {
+            self.recent.retain(|recent| recent != path);
+            self.recent.insert(0, path.clone());
+            self.recent.truncate(RECENT_LIMIT);
+        }
         self.tree
             .update(cx, |tree, cx| tree.reveal(path.as_deref(), cx));
         window.focus(&editor.focus_handle(cx));
@@ -606,6 +656,20 @@ impl Workspace {
         .detach();
     }
 
+    /// Puts the file in front back as it is on disk, as one undoable step.
+    fn revert_active(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor().cloned() else {
+            return;
+        };
+        if editor.read(cx).path().is_none() {
+            return;
+        }
+        if let Err(err) = editor.update(cx, Editor::reload) {
+            self.notices.push(err.into());
+            cx.notify();
+        }
+    }
+
     // ── session ───────────────────────────────────────────────────────────────────────
 
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
@@ -804,6 +868,7 @@ impl Workspace {
             this.lsp.update(cx, Lsp::stop_all);
             this.back.clear();
             this.forward.clear();
+            this.recent.clear();
             this.set_folder(Some(folder), cx);
             this.sidebar = true;
             open_files(this, window, cx);
@@ -834,7 +899,19 @@ impl Workspace {
     }
 
     fn open_picker(&mut self, prefix: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let files = Arc::clone(&self.project_files);
+        if let Some(picker) = self.picker.clone() {
+            // Pressed again, the box steps down its list, as VS Code's does; another
+            // box's key turns it into that box.
+            picker.update(cx, |picker, cx| {
+                if picker.is_mode_of(prefix, cx) {
+                    picker.select_next(cx);
+                } else {
+                    picker.reset(prefix, cx);
+                }
+            });
+            return;
+        }
+        let files = self.quick_open_files(cx);
         let (table, _) = keymap::resolve(config::read_keymap().ok().flatten().as_deref());
         let lines = self
             .active_editor()
@@ -852,11 +929,49 @@ impl Workspace {
         if let Some(picker) = self.picker.take() {
             self.editor_subscriptions.remove(&picker.entity_id());
         }
+        self.focus_editor(window, cx);
+        cx.notify();
+    }
+
+    /// The keys go to the editor in front, or to the window when no file is open.
+    fn focus_editor(&self, window: &mut Window, cx: &App) {
         match self.active_editor() {
             Some(editor) => window.focus(&editor.focus_handle(cx)),
             None => window.focus(&self.focus_handle),
         }
-        cx.notify();
+    }
+
+    /// What Quick Open searches: the folder's files, and the files opened lately, the one
+    /// in front left out (Enter on it would do nothing).
+    fn quick_open_files(&self, cx: &App) -> Files {
+        let front = self
+            .active_editor()
+            .and_then(|editor| editor.read(cx).path().map(Path::to_owned));
+        let recent = self
+            .recent
+            .iter()
+            .filter(|path| Some(*path) != front.as_ref() && path.is_file())
+            .map(|path| match &self.folder {
+                Some(folder) => path
+                    .strip_prefix(folder)
+                    .map_or_else(|_| path.clone(), Path::to_owned),
+                None => path.clone(),
+            })
+            .collect();
+        Files {
+            project: Arc::clone(&self.project_files),
+            recent,
+            listing: matches!(self.listing, Listing::Running(_)),
+            folder: self.folder.is_some(),
+        }
+    }
+
+    /// Gives an open Quick Open box the files as they are now.
+    fn feed_picker(&mut self, cx: &mut Context<Self>) {
+        if let Some(picker) = self.picker.clone() {
+            let files = self.quick_open_files(cx);
+            picker.update(cx, |picker, cx| picker.set_files(files, cx));
+        }
     }
 
     fn on_picker_event(
@@ -950,8 +1065,9 @@ impl Workspace {
     }
 }
 
-/// Saves one editor: a file changed on disk is only replaced if the user says so, and an
-/// untitled one asks for a name. Returns whether it was saved.
+/// Saves one editor: a file changed on disk is only replaced if the user says so (they may
+/// have it reloaded instead), and an untitled one asks for a name. Returns whether the
+/// editor is clean afterwards.
 async fn save_editor(
     this: &WeakEntity<Workspace>,
     editor: &Entity<Editor>,
@@ -982,21 +1098,26 @@ async fn save_editor(
     }
     if changed {
         let detail = format!(
-            "{title} was changed on disk after it was opened. Saving replaces those changes with yours."
+            "{title} was changed on disk after it was opened. Overwrite replaces those changes with yours. Reload takes theirs; Undo brings yours back."
         );
         let Ok(answer) = cx.update(|window, cx| {
             window.prompt(
                 PromptLevel::Warning,
                 "The file has been changed on disk.",
                 Some(&detail),
-                &["Overwrite", "Cancel"],
+                &["Overwrite", "Reload from Disk", "Cancel"],
                 cx,
             )
         }) else {
             return false;
         };
-        if answer.await != Ok(0) {
-            return false;
+        match answer.await {
+            Ok(0) => {}
+            Ok(1) => {
+                let reloaded = editor.update(cx, Editor::reload);
+                return report(this, reloaded, cx);
+            }
+            _ => return false,
         }
     }
     let saved = editor.update(cx, Editor::save);
@@ -1098,6 +1219,7 @@ fn bind_actions(root: Stateful<gpui::Div>, cx: &mut Context<Workspace>) -> State
         .on_action(cx.listener(|this, _: &Save, window, cx| this.save_active(false, window, cx)))
         .on_action(cx.listener(|this, _: &SaveAs, window, cx| this.save_active(true, window, cx)))
         .on_action(cx.listener(|this, _: &SaveAll, window, cx| this.save_all(window, cx)))
+        .on_action(cx.listener(|this, _: &RevertFile, _, cx| this.revert_active(cx)))
         .on_action(cx.listener(|this, _: &CloseEditor, window, cx| {
             if let Some(index) = this.active {
                 this.close_editor_at(index, window, cx);
@@ -1212,31 +1334,30 @@ impl Workspace {
     }
 
     fn render_tabs(&self, chrome: Chrome, cx: &mut Context<Self>) -> impl IntoElement {
+        let folders = tab_folders(
+            &self
+                .editors
+                .iter()
+                .map(|editor| {
+                    let editor = editor.read(cx);
+                    (editor.title(), editor.path().map(Path::to_owned))
+                })
+                .collect::<Vec<_>>(),
+        );
         let tabs: Vec<AnyElement> = self
             .editors
             .iter()
             .enumerate()
             .map(|(index, editor)| {
-                let editor = editor.read(cx);
+                let (title, dirty, path) = {
+                    let editor = editor.read(cx);
+                    let path: Option<SharedString> =
+                        editor.path().map(|path| path.display().to_string().into());
+                    (editor.title(), editor.is_dirty(), path)
+                };
+                let folder = folders.get(index).cloned().flatten();
                 let active = Some(index) == self.active;
-                let dirty = editor.is_dirty();
-                let path: Option<SharedString> =
-                    editor.path().map(|path| path.display().to_string().into());
-                let close = div()
-                    .id(("close-tab", index))
-                    .size(px(16.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .text_size(px(12.))
-                    .text_color(chrome.muted)
-                    .hover(|style| style.bg(chrome.hover).text_color(chrome.text))
-                    .child(if dirty { "●" } else { "×" })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        cx.stop_propagation();
-                        this.close_editor_at(index, window, cx);
-                    }));
+                let close = Self::close_button(index, dirty, chrome, cx);
                 div()
                     .id(("tab", index))
                     .h_full()
@@ -1272,7 +1393,15 @@ impl Workspace {
                     .when_some(path, |tab, path| {
                         tab.tooltip(move |_, cx| cx.new(|_| Tooltip(path.clone())).into())
                     })
-                    .child(editor.title())
+                    .child(title)
+                    .when_some(folder, |tab, folder| {
+                        tab.child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(chrome.muted)
+                                .child(folder),
+                        )
+                    })
                     .child(close)
                     .into_any_element()
             })
@@ -1295,6 +1424,30 @@ impl Workspace {
                     .children(tabs),
             )
             .child(title_strip("tab-bar-empty").flex_1().h_full())
+    }
+
+    /// A tab's ×, or ● while its file is unsaved; a click closes the tab.
+    fn close_button(
+        index: usize,
+        dirty: bool,
+        chrome: Chrome,
+        cx: &mut Context<Self>,
+    ) -> Stateful<gpui::Div> {
+        div()
+            .id(("close-tab", index))
+            .size(px(16.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_sm()
+            .text_size(px(12.))
+            .text_color(chrome.muted)
+            .hover(|style| style.bg(chrome.hover).text_color(chrome.text))
+            .child(if dirty { "●" } else { "×" })
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                cx.stop_propagation();
+                this.close_editor_at(index, window, cx);
+            }))
     }
 
     fn render_status(&self, chrome: Chrome, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1412,6 +1565,19 @@ impl Workspace {
     }
 }
 
+/// For tabs that share a name, the folder holding each, so that two `mod.rs` tell apart.
+fn tab_folders(tabs: &[(SharedString, Option<PathBuf>)]) -> Vec<Option<SharedString>> {
+    tabs.iter()
+        .map(|(title, path)| {
+            let shared = tabs.iter().filter(|(other, _)| other == title).count() > 1;
+            shared
+                .then(|| path.as_deref()?.parent()?.file_name())
+                .flatten()
+                .map(|folder| folder.to_string_lossy().into_owned().into())
+        })
+        .collect()
+}
+
 /// A tab's file, in full, under the pointer.
 struct Tooltip(SharedString);
 
@@ -1466,6 +1632,35 @@ fn title_strip(id: &'static str) -> Stateful<gpui::Div> {
     })
 }
 
+impl Workspace {
+    /// The window's title ("file — folder") and edited mark, set when they change.
+    fn sync_titlebar(&mut self, window: &mut Window, cx: &App) {
+        let folder_name = |folder: &PathBuf| {
+            folder
+                .file_name()
+                .map_or_else(|| folder.to_string_lossy(), |name| name.to_string_lossy())
+                .into_owned()
+        };
+        let title: SharedString = match (self.active_editor(), &self.folder) {
+            (Some(editor), Some(folder)) => {
+                format!("{} — {}", editor.read(cx).title(), folder_name(folder)).into()
+            }
+            (Some(editor), None) => editor.read(cx).title(),
+            (None, Some(folder)) => folder_name(folder).into(),
+            (None, None) => "Kiled".into(),
+        };
+        let edited = self.editors.iter().any(|editor| editor.read(cx).is_dirty());
+        let titlebar = TitleBar { title, edited };
+        if titlebar.title != self.titlebar.title {
+            window.set_window_title(&titlebar.title);
+        }
+        if titlebar.edited != self.titlebar.edited {
+            window.set_window_edited(titlebar.edited);
+        }
+        self.titlebar = titlebar;
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.drawn {
@@ -1474,27 +1669,7 @@ impl Render for Workspace {
                 log::info!("first frame {:?} after launch", launched.elapsed());
             }
         }
-        let title: SharedString = match (self.active_editor(), &self.folder) {
-            (Some(editor), Some(folder)) => format!(
-                "{} — {}",
-                editor.read(cx).title(),
-                folder
-                    .file_name()
-                    .map_or_else(|| folder.to_string_lossy(), |name| name.to_string_lossy())
-            )
-            .into(),
-            (Some(editor), None) => editor.read(cx).title(),
-            (None, Some(folder)) => folder
-                .file_name()
-                .map_or_else(|| folder.to_string_lossy(), |name| name.to_string_lossy())
-                .into_owned()
-                .into(),
-            (None, None) => "Kiled".into(),
-        };
-        if title != self.window_title {
-            window.set_window_title(&title);
-            self.window_title = title;
-        }
+        self.sync_titlebar(window, cx);
         let chrome = Chrome::of(cx.global::<Theme>());
         let content: AnyElement = match self.active_editor() {
             Some(editor) => AnyView::from(editor.clone())
@@ -1597,6 +1772,7 @@ mod tests {
             cx.bind_keys(crate::editor::bindings());
             cx.bind_keys(crate::text_field::bindings());
             cx.bind_keys(crate::picker::bindings());
+            cx.bind_keys(crate::file_tree::bindings());
         });
         let (workspace, cx) =
             cx.add_window_view(|window, cx| Workspace::new(launch, None, Vec::new(), window, cx));
@@ -1857,5 +2033,200 @@ mod tests {
                 .map(|editor| editor.read(cx).document().rope().to_string())
         });
         assert_eq!(text.as_deref(), Some("changed elsewhere\n"));
+    }
+
+    #[test]
+    fn tabs_with_the_same_name_should_show_their_folders() {
+        let tab = |path: &str| {
+            let name = Path::new(path).file_name().unwrap().to_string_lossy();
+            (
+                SharedString::from(name.into_owned()),
+                Some(PathBuf::from(path)),
+            )
+        };
+        assert_eq!(
+            tab_folders(&[
+                tab("/p/lsp/mod.rs"),
+                tab("/p/editor/mod.rs"),
+                tab("/p/main.rs")
+            ]),
+            vec![Some("lsp".into()), Some("editor".into()), None]
+        );
+    }
+
+    #[gpui::test]
+    fn quick_open_should_say_the_folder_is_being_listed_and_fill_in(cx: &mut TestAppContext) {
+        let dir = scratch("listing");
+        let (workspace, cx) = workspace(Launch::default(), cx);
+        workspace.update_in(cx, |this, window, cx| {
+            this.open_paths(vec![dir.clone()], window, cx);
+            this.open_picker("", window, cx);
+        });
+        let files = |cx: &mut VisualTestContext| {
+            workspace.read_with(cx, |this, cx| {
+                let files = this.picker.as_ref().unwrap().read(cx).files().clone();
+                (files.folder, files.listing, files.project.len())
+            })
+        };
+        let while_listing = files(cx);
+        cx.run_until_parked();
+        assert_eq!(
+            (while_listing, files(cx)),
+            ((true, true, 0), (true, false, 2))
+        );
+    }
+
+    #[gpui::test]
+    fn quick_open_should_offer_the_previous_file_first(cx: &mut TestAppContext) {
+        let dir = scratch("recent");
+        let file = |name: &str| SavedFile {
+            path: dir.join(name),
+            line: 1,
+            column: 1,
+        };
+        let (workspace, cx) = workspace(
+            Launch {
+                folder: Some(dir.clone()),
+                files: vec![file("notes.txt"), file("src/main.rs")],
+                active: 0,
+                sidebar: true,
+            },
+            cx,
+        );
+        let active = |cx: &mut VisualTestContext| {
+            workspace.read_with(cx, |this, cx| {
+                this.active_editor()
+                    .and_then(|editor| editor.read(cx).path().map(Path::to_owned))
+            })
+        };
+        cx.simulate_keystrokes("cmd-p enter");
+        cx.run_until_parked();
+        let first = active(cx);
+        cx.simulate_keystrokes("cmd-p enter");
+        cx.run_until_parked();
+        assert_eq!(
+            (first, active(cx)),
+            (Some(dir.join("src/main.rs")), Some(dir.join("notes.txt")))
+        );
+    }
+
+    #[gpui::test]
+    fn cmd_p_again_should_step_down_the_list(cx: &mut TestAppContext) {
+        let dir = scratch("step");
+        let (workspace, cx) = workspace(
+            Launch {
+                folder: Some(dir.clone()),
+                sidebar: true,
+                ..Launch::default()
+            },
+            cx,
+        );
+        // The folder's files in order: notes.txt, then src/main.rs.
+        cx.simulate_keystrokes("cmd-p cmd-p enter");
+        cx.run_until_parked();
+        let opened = workspace.read_with(cx, |this, cx| {
+            this.active_editor()
+                .and_then(|editor| editor.read(cx).path().map(Path::to_owned))
+        });
+        assert_eq!(opened, Some(dir.join("src/main.rs")));
+    }
+
+    #[gpui::test]
+    fn escape_in_the_explorer_should_give_the_editor_the_keys_back(cx: &mut TestAppContext) {
+        let dir = scratch("escape");
+        let (workspace, cx) = workspace(
+            Launch {
+                folder: Some(dir.clone()),
+                files: vec![SavedFile {
+                    path: dir.join("notes.txt"),
+                    line: 1,
+                    column: 1,
+                }],
+                sidebar: true,
+                ..Launch::default()
+            },
+            cx,
+        );
+        let focused = |cx: &mut VisualTestContext| {
+            workspace.update_in(cx, |this, window, cx| {
+                (
+                    this.tree.focus_handle(cx).is_focused(window),
+                    this.active_editor()
+                        .is_some_and(|editor| editor.focus_handle(cx).is_focused(window)),
+                )
+            })
+        };
+        cx.simulate_keystrokes("cmd-shift-e");
+        let in_tree = focused(cx);
+        cx.simulate_keystrokes("escape");
+        assert_eq!((in_tree, focused(cx)), ((true, false), (false, true)));
+    }
+
+    #[gpui::test]
+    fn revert_file_should_take_the_disk_text_and_undo_bring_the_edit_back(cx: &mut TestAppContext) {
+        let dir = scratch("revert");
+        let (workspace, cx) = workspace(
+            Launch {
+                files: vec![SavedFile {
+                    path: dir.join("notes.txt"),
+                    line: 1,
+                    column: 6,
+                }],
+                ..Launch::default()
+            },
+            cx,
+        );
+        let state = |cx: &mut VisualTestContext| {
+            workspace.read_with(cx, |this, cx| {
+                let editor = this.active_editor().unwrap().read(cx);
+                (editor.document().rope().to_string(), editor.is_dirty())
+            })
+        };
+        cx.simulate_input(" world");
+        cx.dispatch_action(RevertFile);
+        let reverted = state(cx);
+        cx.simulate_keystrokes("cmd-z");
+        assert_eq!(
+            (reverted, state(cx)),
+            (
+                ("hello\n".to_owned(), false),
+                ("hello world\n".to_owned(), true)
+            )
+        );
+    }
+
+    #[gpui::test]
+    fn saving_over_a_file_changed_on_disk_can_reload_it_instead(cx: &mut TestAppContext) {
+        let dir = scratch("reload-instead");
+        let file = dir.join("notes.txt");
+        let (workspace, cx) = workspace(
+            Launch {
+                files: vec![SavedFile {
+                    path: file.clone(),
+                    line: 1,
+                    column: 1,
+                }],
+                ..Launch::default()
+            },
+            cx,
+        );
+        cx.simulate_input("x");
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&file, "changed elsewhere\n").unwrap();
+        cx.simulate_keystrokes("cmd-s");
+        cx.simulate_prompt_answer("Reload from Disk");
+        cx.run_until_parked();
+        let (text, dirty) = workspace.read_with(cx, |this, cx| {
+            let editor = this.active_editor().unwrap().read(cx);
+            (editor.document().rope().to_string(), editor.is_dirty())
+        });
+        assert_eq!(
+            (text, dirty, std::fs::read_to_string(&file).unwrap()),
+            (
+                "changed elsewhere\n".to_owned(),
+                false,
+                "changed elsewhere\n".to_owned()
+            )
+        );
     }
 }

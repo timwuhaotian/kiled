@@ -1,8 +1,12 @@
 //! The Quick Open box, as VS Code has it: files (Cmd-P), commands after `>` (Cmd-Shift-P)
-//! and a line after `:` (Ctrl-G) (DESIGN.md §7). A path starting with `~` or `/` opens any
-//! file on the Mac, after `>` too.
+//! and a line after `:` (Ctrl-G) (DESIGN.md §7). The files opened lately come first, so
+//! Enter with nothing typed goes back to the previous one. A path starting with `~` or `/`
+//! opens any file on the Mac, after `>` too.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
@@ -35,6 +39,24 @@ pub fn bindings() -> Vec<KeyBinding> {
 const ROWS: usize = 12;
 const SHOWN_LIMIT: usize = 300;
 const ROW_HEIGHT: f32 = 26.;
+/// What a recent file scores on top of its match: ahead of an equally good file, behind a
+/// clearly better one (a word start is worth as much).
+const RECENT_BONUS: i64 = 16;
+
+/// The files Quick Open searches.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Files {
+    /// The folder's files, relative to it and sorted; empty with no folder open, and until
+    /// the folder has been listed.
+    pub project: Arc<Vec<PathBuf>>,
+    /// Files opened lately, the latest first: relative to the folder when in it, else
+    /// absolute.
+    pub recent: Vec<PathBuf>,
+    /// The folder is being listed; `project` is what the last listing found.
+    pub listing: bool,
+    /// A folder is open.
+    pub folder: bool,
+}
 
 /// What was chosen.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +94,16 @@ fn mode_of(query: &str) -> (Mode, &str) {
     }
 }
 
+/// The prefix that opened the box `query` is in: `>`, `:` or nothing. A path typed in the
+/// file box keeps it the file box.
+fn prefix_of(query: &str) -> &'static str {
+    match query.chars().next() {
+        Some('>') => ">",
+        Some(':') => ":",
+        _ => "",
+    }
+}
+
 /// The file a typed path names, canonical as the command line opens it, so a file is open
 /// once however it was reached.
 fn file_at(text: &str) -> Option<PathBuf> {
@@ -93,11 +125,14 @@ fn parse_line(text: &str) -> Option<(usize, Option<usize>)> {
 
 pub struct Picker {
     query: Entity<TextField>,
-    files: Arc<Vec<PathBuf>>,
+    files: Files,
+    /// Project files that are recent too, by index, sorted: listed once, among the recent.
+    duplicates: Vec<usize>,
     commands: Vec<(Command, SharedString)>,
     /// Lines in the active editor, for Go to Line's hint.
     lines: usize,
-    /// Matches as indices into the files or commands, with the matched chars.
+    /// Matches as indices into the recent files and then the project's, or into the
+    /// commands, with the matched chars.
     matches: Vec<(usize, Vec<usize>)>,
     /// The file a typed path names.
     found: Option<PathBuf>,
@@ -118,7 +153,7 @@ impl Picker {
     /// A box starting with `prefix` typed (`>`, `:` or nothing).
     pub fn new(
         prefix: &str,
-        files: Arc<Vec<PathBuf>>,
+        files: Files,
         bound: &[(String, Command)],
         lines: usize,
         window: &mut Window,
@@ -142,6 +177,7 @@ impl Picker {
             .collect();
         let mut this = Self {
             query,
+            duplicates: duplicates(&files),
             files,
             commands,
             lines,
@@ -169,37 +205,74 @@ impl Picker {
         }
     }
 
+    /// The folder has been listed, or listed again; the typed query stays.
+    pub fn set_files(&mut self, files: Files, cx: &mut Context<Self>) {
+        if files == self.files {
+            return;
+        }
+        self.duplicates = duplicates(&files);
+        self.files = files;
+        self.update_matches(cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn files(&self) -> &Files {
+        &self.files
+    }
+
+    /// Down one row, as the box's own key pressed again does.
+    pub fn select_next(&mut self, cx: &mut Context<Self>) {
+        self.step(1, cx);
+    }
+
+    /// Starts over as the box `prefix` opens (`>`, `:` or nothing).
+    pub fn reset(&mut self, prefix: &str, cx: &mut Context<Self>) {
+        self.query.update(cx, |field, cx| {
+            field.set_text("", cx);
+            field.type_text(prefix, cx);
+        });
+        self.update_matches(cx);
+    }
+
+    /// Whether the box is the one `prefix` opens.
+    pub fn is_mode_of(&self, prefix: &str, cx: &App) -> bool {
+        prefix_of(self.query.read(cx).text()) == prefix_of(prefix)
+    }
+
+    /// The file a match's index names: a recent one, or the project's.
+    fn candidate(&self, index: usize) -> Option<&PathBuf> {
+        let recent = self.files.recent.len();
+        if index < recent {
+            self.files.recent.get(index)
+        } else {
+            self.files.project.get(index - recent)
+        }
+    }
+
     fn update_matches(&mut self, cx: &mut Context<Self>) {
         let text = self.query.read(cx).text().to_owned();
         let (mode, query) = mode_of(&text);
-        let candidates: Vec<String> = match mode {
-            Mode::Files => self
-                .files
-                .iter()
-                .map(|path| path.to_string_lossy().into_owned())
-                .collect(),
-            Mode::Commands => self
-                .commands
-                .iter()
-                .map(|(command, _)| command.title().to_owned())
-                .collect(),
+        self.matches = match mode {
+            Mode::Files => rank(
+                query,
+                &self.files.recent,
+                &self.files.project,
+                &self.duplicates,
+            ),
+            Mode::Commands => {
+                let scored = self
+                    .commands
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, (command, _))| {
+                        fuzzy::score(query, command.title())
+                            .map(|(score, positions)| (score, index, positions))
+                    })
+                    .collect();
+                ordered(query, scored)
+            }
             Mode::Path | Mode::Line => Vec::new(),
         };
-        let mut scored: Vec<(i64, usize, Vec<usize>)> = candidates
-            .iter()
-            .enumerate()
-            .filter_map(|(index, candidate)| {
-                fuzzy::score(query, candidate).map(|(score, positions)| (score, index, positions))
-            })
-            .collect();
-        if !query.is_empty() {
-            scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        }
-        scored.truncate(SHOWN_LIMIT);
-        self.matches = scored
-            .into_iter()
-            .map(|(_, index, positions)| (index, positions))
-            .collect();
         self.found = if mode == Mode::Path {
             file_at(query)
         } else {
@@ -237,7 +310,7 @@ impl Picker {
             Mode::Files => self
                 .matches
                 .get(self.selected)
-                .and_then(|(index, _)| self.files.get(*index))
+                .and_then(|(index, _)| self.candidate(*index))
                 .map(|path| PickerEvent::Open(path.clone())),
             Mode::Path => self.found.clone().map(PickerEvent::Open),
             Mode::Commands => self
@@ -276,20 +349,26 @@ impl Picker {
             .map(|(index, positions)| match mode {
                 Mode::Files => {
                     let path = self
-                        .files
-                        .get(*index)
+                        .candidate(*index)
                         .map(|path| path.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    // The name first, its folder after it, dimmed.
+                    // The name first, its folder after it, dimmed; one outside the open
+                    // folder is absolute, shown as `~` shortens it.
                     let split = path.rfind('/').map_or(0, |slash| slash + 1);
                     let name_start = path[..split].chars().count();
                     let name_positions = positions
                         .iter()
                         .filter_map(|at| at.checked_sub(name_start))
                         .collect();
+                    let folder = path[..split].trim_end_matches('/');
+                    let folder = if path.starts_with('/') {
+                        settings::abbreviate_home(Path::new(folder))
+                    } else {
+                        folder.to_owned()
+                    };
                     (
                         path[split..].to_owned().into(),
-                        path[..split].trim_end_matches('/').to_owned().into(),
+                        folder.into(),
                         name_positions,
                     )
                 }
@@ -300,6 +379,59 @@ impl Picker {
             })
             .collect()
     }
+}
+
+/// Project files that are among the recent, by index, sorted.
+fn duplicates(files: &Files) -> Vec<usize> {
+    let mut found: Vec<usize> = files
+        .recent
+        .iter()
+        .filter_map(|path| files.project.binary_search(path).ok())
+        .collect();
+    found.sort_unstable();
+    found
+}
+
+/// The recent files and the project's scored against `query`, best first: with nothing
+/// typed, the recent ones, latest first, then the project's in order. Indices count the
+/// recent files first, then the project's, whose `duplicates` (sorted) are left out.
+fn rank(
+    query: &str,
+    recent: &[PathBuf],
+    project: &[PathBuf],
+    duplicates: &[usize],
+) -> Vec<(usize, Vec<usize>)> {
+    let from = recent.len();
+    let candidates = recent
+        .iter()
+        .enumerate()
+        .map(|(index, path)| (index, path, RECENT_BONUS))
+        .chain(
+            project
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| duplicates.binary_search(index).is_err())
+                .map(|(index, path)| (from + index, path, 0)),
+        );
+    let scored = candidates
+        .filter_map(|(index, path, bonus)| {
+            let (score, positions) = fuzzy::score(query, &path.to_string_lossy())?;
+            Some((score + bonus, index, positions))
+        })
+        .collect();
+    ordered(query, scored)
+}
+
+/// Matches best first, ties in their order; with nothing typed, all in their order.
+fn ordered(query: &str, mut scored: Vec<(i64, usize, Vec<usize>)>) -> Vec<(usize, Vec<usize>)> {
+    if !query.is_empty() {
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    }
+    scored.truncate(SHOWN_LIMIT);
+    scored
+        .into_iter()
+        .map(|(_, index, positions)| (index, positions))
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -347,7 +479,12 @@ impl Render for Picker {
                 .text_color(colors.muted)
                 .child(match mode {
                     Mode::Path => "No file at this path",
-                    Mode::Files if self.files.is_empty() => "Open a folder to search its files",
+                    Mode::Files if !self.files.folder => {
+                        "Open a folder to search its files, or type a path like ~/.zshrc"
+                    }
+                    Mode::Files if self.files.listing && self.files.project.is_empty() => {
+                        "Listing the folder's files…"
+                    }
                     _ => "No matching results",
                 })
                 .into_any_element()
@@ -464,6 +601,40 @@ fn piece(text: String, matched: bool, colors: Colors) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_files_should_come_first_and_only_once() {
+        let recent = [PathBuf::from("src/b.rs"), PathBuf::from("/tmp/notes.txt")];
+        let project = [
+            PathBuf::from("a.rs"),
+            PathBuf::from("src/b.rs"),
+            PathBuf::from("src/c.rs"),
+        ];
+        let files = Files {
+            project: Arc::new(project.to_vec()),
+            recent: recent.to_vec(),
+            listing: false,
+            folder: true,
+        };
+        let duplicates = duplicates(&files);
+        let indices = |query: &str| -> Vec<usize> {
+            rank(query, &recent, &project, &duplicates)
+                .into_iter()
+                .map(|(index, _)| index)
+                .collect()
+        };
+        // Nothing typed: the recent files, then the rest in order, `src/b.rs` once. A
+        // recent file wins a tie ("rs"), not a clearly better match ("c.rs").
+        assert_eq!(
+            (
+                duplicates.clone(),
+                indices(""),
+                indices("rs"),
+                indices("c.rs")
+            ),
+            (vec![1], vec![0, 1, 2, 4], vec![0, 2, 4], vec![4, 0])
+        );
+    }
 
     #[test]
     fn the_prefix_should_pick_the_mode() {

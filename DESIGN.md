@@ -38,8 +38,8 @@ Build status (0.0.1):
 | A6 | Syntax highlighting with tree-sitter for Rust, TypeScript, TSX, JavaScript, JSX, JSON, JSONC, YAML and TOML; any other file opens as plain text. Only the lines in view are highlighted. | `syntax` / `language` tests; screenshots. |
 | A7 | Language servers for those languages start on the first file and stay per project root: rust-analyzer, TypeScript 7's own server (`tsc --lsp`, the project's install first; typescript-language-server for TypeScript ≤ 6), vscode-json-language-server, yaml-language-server, taplo. Diagnostics (pushed or pulled) as squiggles, a count in the status bar, marks on the scrollbar, **F8/⇧F8** to step through; completion as you type and on **⌃Space**; hover on rest and **⌘K ⌘I**; **F12**/⌘-click to the definition (in another file too); **⇧⌥F** formats. A server that isn't installed shows how to install it. | `servers` tests against real servers; screenshots. |
 | A8 | Find (**⌘F**) highlights every match as you type, says "3 of 12", steps with Enter/⇧Enter/⌘G/⇧⌘G, and toggles case, whole word and regex (**⌥⌘C/W/R**). Replace (**⌥⌘F**) replaces one or all, all as one undo step. | `find` tests. |
-| A9 | **⌘P** opens files of the folder by fuzzy name (`.gitignore` respected), or any file on the Mac by a path starting with `~` or `/` (after ⇧⌘P's `>` too), **⇧⌘P** runs any command by name and shows its keys, **⌃G** goes to `line[:column]`. **⌃-** / **⌃⇧-** go back and forward across jumps. | `workspace` / `picker` tests. |
-| A10 | Nothing unsaved is lost: closing a dirty tab, opening another folder, closing the window and quitting ask Save / Don't Save / Cancel. A file changed on disk reloads if it has no edits; with edits, the user is told, and saving asks before overwriting. Saving replaces a file atomically (temp file, fsync, rename) with its permissions, group, ACL and extended attributes, through a symlink that stays one; hard links and others' files are written in place and put back if that fails part way; a read-only file is refused. Line endings and a BOM are kept. Binary and non-UTF-8 files are refused, not mangled. | `files` / `document` / `workspace` tests. |
+| A9 | **⌘P** opens files of the folder by fuzzy name (`.gitignore` respected), the files opened lately first (so with nothing typed, Enter goes back to the previous file), or any file on the Mac by a path starting with `~` or `/` (after ⇧⌘P's `>` too); while the folder is still being listed it says so, and fills in when done; pressed again it steps down the list. **⇧⌘P** runs any command by name and shows its keys, **⌃G** goes to `line[:column]`. **⌃-** / **⌃⇧-** go back and forward across jumps. | `workspace` / `picker` tests. |
+| A10 | Nothing unsaved is lost: closing a dirty tab, opening another folder, closing the window and quitting ask Save / Don't Save / Cancel. A file changed on disk reloads if it has no edits; with edits, the user is told, and saving asks: Overwrite, Reload from Disk, or Cancel. **Revert File** (File menu, palette) reloads on demand, as one undoable step. Saving replaces a file atomically (temp file, fsync, rename) with its permissions, group, ACL and extended attributes, through a symlink that stays one; hard links and others' files are written in place and put back if that fails part way; a read-only file is refused. Line endings and a BOM are kept. Binary and non-UTF-8 files are refused, not mangled. | `files` / `document` / `workspace` tests. |
 | A11 | **Keys are VS Code's** (§8), all rebindable: **Settings ▸ Keyboard** records a shortcut per command (refusing one that is taken, with **Reset**), and `~/.config/kiled/keymap.toml` takes any binding, two-stroke ones included. **Keyboard Shortcuts…** (**⌘K ⌘S**) opens that file in Kiled. Changes apply when the window is focused again; the menus show the keys bound. | `keymap` / `config` / `settings_window` tests. |
 | A12 | **Settings…** (**⌘,**): Kil's five themes, sidebar opacity, font family and size, tab size, spaces or tabs, cursor blink; `config.toml` holds them and `[servers]` commands. **⌘= ⌘- ⌘0** zoom. | `settings` tests; manual. |
 | A13 | **Performance.** Idle CPU 0.0% with the cursor not blinking, < 1% blinking. A keystroke (edit, incremental reparse, highlighting a screenful) under 1 ms on average on a 50,000-line file. First frame within 200 ms of launch. | §5.4 [measured]. |
@@ -198,7 +198,8 @@ read-only"); renaming over it would have worked, so that is asked first.
 
 Changes on disk are noticed when the window is focused (no watcher thread, as Kil): a clean
 editor reloads (one undoable step), a dirty one keeps its edits and is flagged; saving it
-asks before overwriting.
+asks whether to overwrite, or to reload instead. Revert File reloads the same way, on
+demand: Undo brings the edits back.
 
 ### 4.5 Find
 
@@ -321,11 +322,12 @@ first two signal the groups, and on the last every server sees its stdin close a
 ### 6.4 Status
 
 The status bar shows the active file's server: `starting…`, its progress
-(`rust-analyzer: Indexing 45%`), or why it failed (`not found; install with …`; or
-`didn't start, install with … (exited (1): <its last stderr line>)` when it died before
-initializing, as a rustup proxy without its component does — the hint first, since the bar
-cuts long text at its end). One that doesn't answer `initialize` within 30 s, or answers it
-with an error, is stopped and keeps that reason (`didn't answer in 30 s`).
+(`rust-analyzer: Indexing 45%`), or why it isn't running. One that isn't installed says
+`not found; install with …` in the bar's quiet color: a hint, not a failure. One that failed
+is in the failure color: `didn't start, install with … (exited (1): <its last stderr line>)`
+when it died before initializing, as a rustup proxy without its component does — the hint
+first, since the bar cuts long text at its end. One that doesn't answer `initialize` within
+30 s, or answers it with an error, is stopped and keeps that reason (`didn't answer in 30 s`).
 
 ### 6.5 Tests
 
@@ -342,14 +344,16 @@ that a background child it started dies with its group.
 **Window.** One window, transparent titlebar, traffic lights at (14, 12), Kil's blurred
 background behind a sidebar that is 92% opaque by default (file names must read over a light
 desktop too; Settings lowers it). Top bar 38 px: the sidebar's title strip and the tabs;
-double-clicking empty title bar does what System Settings says.
+double-clicking empty title bar does what System Settings says. The window carries macOS's
+edited mark (the dot in its close button) while any tab has unsaved changes.
 
 **Sidebar** (240 px, **⌘B**): the folder's name, then the explorer — folders first, each
 read when first expanded and again when the window is focused; the active file revealed and
-marked; ↑↓←→ and Enter when focused (**⇧⌘E**).
+marked; ↑↓←→ and Enter when focused (**⇧⌘E**), Escape to go back to the editor.
 
 **Tabs**: one per open file, the active one with an accent top border; ● for unsaved, × on
-the others; middle-click closes; the pointer resting on one shows the file's full path.
+the others; two tabs with one file name show their folders after it; middle-click closes;
+the pointer resting on one shows the file's full path.
 
 **Status bar**: problems (click: next), the server's status, a short message ("No definition
 found"); then `Ln, Col` with the selection or cursor count, indentation, line ending,
@@ -392,7 +396,8 @@ Settings, Hide, Quit, which work in the Settings window too).
 | ⌥⌫ ⌥⌦, ⌘⌫ ⌘⌦ ⌃K | delete word / to line edge | ⌘← ⌘→ Home End ⌃A ⌃E | line start (smart) / end |
 
 Arrows, ⌥←→ (words), ⌘↑↓ (top/bottom), PgUp/PgDn and their ⇧ forms select; ⌃B ⌃F ⌃P ⌃N
-move as in every macOS text field.
+move as in every macOS text field. **Revert File** has no key, as in VS Code: it is in the
+File menu and the palette.
 
 **Overrides** are Kil's design, unchanged: `~/.config/kiled/keymap.toml` `[bindings]` maps
 keys to command names; an entry replaces whatever its keys did in any scope (so a user key

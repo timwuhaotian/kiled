@@ -6,6 +6,19 @@ versions below are how we track releases, and match `Cargo.toml` and the app's I
 
 ## Unreleased
 
+## 0.0.3 — 2026-10-24
+
+- **Go to File** lists the files you opened lately first, so ⌘P and Enter go back to the
+  previous file. While a big folder is still being listed it says so, instead of asking you
+  to open a folder, and fills in when done. ⌘P pressed again steps down the list.
+- **Revert File** (File menu, Command Palette) puts the file back as it is on disk, as one
+  undoable step. Saving a file someone else changed offers **Reload from Disk** beside
+  Overwrite.
+- A language server that isn't installed is noted quietly in the status bar, with how to
+  install it, not in the color of a failure.
+- Two tabs with the same file name show their folders. Escape in the explorer goes back to
+  the editor. The window's close button shows the edited dot while a tab is unsaved.
+
 ## 0.0.2 — 2026-10-24
 
 - **Tabs** show their file's full path when the pointer rests on them.

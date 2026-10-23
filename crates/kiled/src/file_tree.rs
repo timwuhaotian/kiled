@@ -15,7 +15,10 @@ use kiled_core::files::{self, Entry};
 
 use crate::theme::Theme;
 
-actions!(file_tree, [Next, Previous, Expand, Collapse, Activate]);
+actions!(
+    file_tree,
+    [Next, Previous, Expand, Collapse, Activate, Dismiss]
+);
 
 /// Keys for moving through the tree; fixed, and live while it has focus.
 pub fn bindings() -> Vec<KeyBinding> {
@@ -27,6 +30,7 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("left", Collapse, cx),
         KeyBinding::new("enter", Activate, cx),
         KeyBinding::new("space", Activate, cx),
+        KeyBinding::new("escape", Dismiss, cx),
     ]
 }
 
@@ -38,6 +42,8 @@ const INDENT: f32 = 12.;
 pub enum TreeEvent {
     /// A file was clicked or entered.
     Open(PathBuf),
+    /// Escape: the editor should have the keys again.
+    Dismiss,
 }
 
 #[derive(Clone, Debug)]
@@ -316,6 +322,7 @@ impl Render for FileTree {
                     this.activate(index, cx);
                 }
             }))
+            .on_action(cx.listener(|_, _: &Dismiss, _, cx| cx.emit(TreeEvent::Dismiss)))
             .child(list)
     }
 }

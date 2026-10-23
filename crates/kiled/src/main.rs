@@ -53,6 +53,30 @@ fn forget_launcher_identity() {
     }
 }
 
+/// The Edit menu: the system's undo and clipboard items, then find and the formatters.
+fn edit_menu() -> Menu {
+    use editor as e;
+    Menu {
+        name: "Edit".into(),
+        items: vec![
+            MenuItem::os_action("Undo", e::Undo, OsAction::Undo),
+            MenuItem::os_action("Redo", e::Redo, OsAction::Redo),
+            MenuItem::separator(),
+            MenuItem::os_action("Cut", e::Cut, OsAction::Cut),
+            MenuItem::os_action("Copy", e::Copy, OsAction::Copy),
+            MenuItem::os_action("Paste", e::Paste, OsAction::Paste),
+            MenuItem::separator(),
+            MenuItem::action("Find", e::Find),
+            MenuItem::action("Replace", e::Replace),
+            MenuItem::action("Find Next", e::FindNext),
+            MenuItem::action("Find Previous", e::FindPrevious),
+            MenuItem::separator(),
+            MenuItem::action("Toggle Line Comment", e::ToggleLineComment),
+            MenuItem::action("Format Document", e::FormatDocument),
+        ],
+    }
+}
+
 /// The menu bar. Set again whenever the keymap changes, so the shortcuts it shows are the
 /// ones bound.
 fn menus(_: &App) -> Vec<Menu> {
@@ -83,31 +107,14 @@ fn menus(_: &App) -> Vec<Menu> {
                 MenuItem::action("Save", w::Save),
                 MenuItem::action("Save As…", w::SaveAs),
                 MenuItem::action("Save All", w::SaveAll),
+                MenuItem::action("Revert File", w::RevertFile),
                 MenuItem::separator(),
                 MenuItem::action("Close Editor", w::CloseEditor),
                 MenuItem::action("Close All Editors", w::CloseAllEditors),
                 MenuItem::action("Reopen Closed Editor", w::ReopenClosedEditor),
             ],
         },
-        Menu {
-            name: "Edit".into(),
-            items: vec![
-                MenuItem::os_action("Undo", e::Undo, OsAction::Undo),
-                MenuItem::os_action("Redo", e::Redo, OsAction::Redo),
-                MenuItem::separator(),
-                MenuItem::os_action("Cut", e::Cut, OsAction::Cut),
-                MenuItem::os_action("Copy", e::Copy, OsAction::Copy),
-                MenuItem::os_action("Paste", e::Paste, OsAction::Paste),
-                MenuItem::separator(),
-                MenuItem::action("Find", e::Find),
-                MenuItem::action("Replace", e::Replace),
-                MenuItem::action("Find Next", e::FindNext),
-                MenuItem::action("Find Previous", e::FindPrevious),
-                MenuItem::separator(),
-                MenuItem::action("Toggle Line Comment", e::ToggleLineComment),
-                MenuItem::action("Format Document", e::FormatDocument),
-            ],
-        },
+        edit_menu(),
         Menu {
             name: "Selection".into(),
             items: vec![

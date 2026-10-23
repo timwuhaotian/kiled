@@ -51,7 +51,9 @@ pub enum State {
     Running,
     /// Shut down with the folder it served.
     Stopped,
-    /// Not found, failed to start, or exited; says why.
+    /// Not installed; says how to install it.
+    Missing(SharedString),
+    /// Failed to start, or exited; says why.
     Failed(SharedString),
 }
 
@@ -259,7 +261,8 @@ impl Lsp {
         self.running(id).map(|server| &server.caps)
     }
 
-    /// What the status bar says about a server, and whether it is a failure.
+    /// What the status bar says about a server, and whether it is a failure: one that isn't
+    /// installed is a hint, not a failure.
     pub fn status(&self, id: ServerId) -> Option<(SharedString, bool)> {
         let server = self.servers.get(id)?;
         let name = server.spec.name;
@@ -270,6 +273,7 @@ impl Lsp {
                 None => (name.into(), false),
             },
             State::Stopped => (format!("{name}: stopped").into(), false),
+            State::Missing(how) => (format!("{name}: {how}").into(), false),
             State::Failed(why) => (format!("{name}: {why}").into(), true),
         })
     }
@@ -324,7 +328,7 @@ impl Lsp {
         let Some((spec, program, args)) = found else {
             let first = server.candidates[0];
             server.state =
-                State::Failed(format!("not found; install with `{}`", first.install).into());
+                State::Missing(format!("not found; install with `{}`", first.install).into());
             cx.notify();
             return;
         };
@@ -575,6 +579,34 @@ mod tests {
                 State::Starting,
                 State::Failed("didn't answer in 30 s".into()),
                 false
+            )
+        );
+    }
+
+    #[gpui::test]
+    fn a_server_that_isnt_installed_should_say_so_without_failing(cx: &mut TestAppContext) {
+        let mut settings = Settings::default();
+        settings
+            .servers
+            .insert("taplo".into(), vec!["kiled-no-such-server".into()]);
+        cx.update(|cx| cx.set_global(settings));
+        let lsp = lsp_with("taplo", State::Waiting, cx);
+        lsp.update(cx, |lsp, cx| lsp.start(0, cx));
+        let (state, status) =
+            lsp.read_with(cx, |lsp, _| (lsp.servers[0].state.clone(), lsp.status(0)));
+        let install = language::SERVERS
+            .iter()
+            .find(|server| server.name == "taplo")
+            .unwrap()
+            .install;
+        assert_eq!(
+            (state, status),
+            (
+                State::Missing(format!("not found; install with `{install}`").into()),
+                Some((
+                    format!("taplo: not found; install with `{install}`").into(),
+                    false
+                ))
             )
         );
     }

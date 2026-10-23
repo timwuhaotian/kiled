@@ -114,6 +114,7 @@ commands! {
     Save: "save", "Save", File, Workspace, w::Save, ["cmd-s"];
     SaveAs: "save_as", "Save As…", File, Workspace, w::SaveAs, ["cmd-shift-s"];
     SaveAll: "save_all", "Save All", File, Workspace, w::SaveAll, ["cmd-alt-s"];
+    RevertFile: "revert_file", "Revert File", File, Workspace, w::RevertFile, [];
     CloseEditor: "close_editor", "Close Editor", File, Workspace, w::CloseEditor, ["cmd-w"];
     CloseAllEditors: "close_all_editors", "Close All Editors", File, Workspace,
         w::CloseAllEditors, ["cmd-k cmd-w"];

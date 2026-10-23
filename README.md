@@ -53,11 +53,12 @@ and 28 MB.</sub>
   yaml-language-server and taplo — whichever you have installed — and tells you how to
   install one it can't find.
 - **Find and replace** in the file, with case, whole word and regex; **Go to File** by fuzzy
-  name, or any file on the Mac by its path (`~/.npmrc`), the **Command Palette**, **Go to
-  Line**, and Back and Forward across jumps.
+  name, the files you opened lately first, or any file on the Mac by its path (`~/.npmrc`);
+  the **Command Palette**, **Go to Line**, and Back and Forward across jumps.
 - **Nothing unsaved is lost.** Closing a tab, opening another folder and quitting ask first.
   A file changed on disk reloads if you hadn't touched it, and saving over someone else's
-  change asks. Saves are atomic and keep permissions, ACLs, extended attributes,
+  change asks, offering to reload instead. **Revert File** puts a file back as it is on disk,
+  and Undo brings your edits back. Saves are atomic and keep permissions, ACLs, extended attributes,
   symlinks and line endings; read-only files are refused, and binary files are never
   opened as text.
 - **Comes back** with the folder, the tabs, their cursors and the window where you left them.
