@@ -6,6 +6,8 @@ versions below are how we track releases, and match `Cargo.toml` and the app's I
 
 ## Unreleased
 
+## 0.0.4 — 2026-10-24
+
 - **Kiled updates itself.** It checks at launch and every six hours, downloads a new release in
   the background, checks its checksum, Developer ID signature and notarization, and installs
   it when Kiled quits. **Kiled ▸ Check for Updates…** (in the Command Palette too) checks now

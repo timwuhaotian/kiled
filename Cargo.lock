@@ -3068,7 +3068,7 @@ dependencies = [
 
 [[package]]
 name = "kiled"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -3084,7 +3084,7 @@ dependencies = [
 
 [[package]]
 name = "kiled-core"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "futures",
  "ignore",
