@@ -15,7 +15,7 @@ use crate::{
     settings::Settings,
     text_field::{FieldEvent, TextField},
     theme::{Theme, ThemeName},
-    workspace,
+    update, workspace,
 };
 
 actions!(settings_window, [CloseWindow]);
@@ -315,22 +315,23 @@ fn swatch(name: ThemeName, chosen: bool, c: Colors) -> Stateful<Div> {
         )
 }
 
-/// Theme colors copied out so `cx` stays free for listeners while rendering.
+/// Theme colors copied out so `cx` stays free for listeners while rendering; the update
+/// window draws with the same ones.
 #[derive(Clone, Copy)]
-struct Colors {
-    bg: Hsla,
-    card: Hsla,
-    text: Hsla,
-    muted: Hsla,
-    hover: Hsla,
-    off: Hsla,
-    accent: Hsla,
-    divider: Hsla,
-    error: Hsla,
+pub struct Colors {
+    pub bg: Hsla,
+    pub card: Hsla,
+    pub text: Hsla,
+    pub muted: Hsla,
+    pub hover: Hsla,
+    pub off: Hsla,
+    pub accent: Hsla,
+    pub divider: Hsla,
+    pub error: Hsla,
 }
 
 impl Colors {
-    fn of(theme: &Theme) -> Self {
+    pub fn of(theme: &Theme) -> Self {
         Self {
             bg: theme.editor_bg,
             card: theme.hover,
@@ -399,7 +400,11 @@ fn row(
         .into_any_element()
 }
 
-fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, c: Colors) -> Stateful<Div> {
+pub fn button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    c: Colors,
+) -> Stateful<Div> {
     div()
         .id(id)
         .h(px(24.))
@@ -642,6 +647,31 @@ impl SettingsWindow {
         ]
     }
 
+    fn update_rows(&self, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        vec![
+            row(
+                "Update automatically",
+                Some("Downloads in the background, installs when Kiled quits"),
+                c,
+                toggle("auto-update", self.file.auto_update, c).on_click(cx.listener(
+                    |this, _: &ClickEvent, _, cx| {
+                        let on = !this.file.auto_update;
+                        this.write("auto_update", &on.into(), cx);
+                    },
+                )),
+            ),
+            row(
+                concat!("Kiled ", env!("CARGO_PKG_VERSION")),
+                None,
+                c,
+                // Called, not dispatched, so it doesn't depend on which window is active.
+                button("check-for-updates", "Check Now", c).on_click(|_, _, cx| {
+                    update::check_now(cx);
+                }),
+            ),
+        ]
+    }
+
     /// Every command with the keys it runs on, by group: click a shortcut and press the new
     /// one.
     fn keyboard_sections(&self, c: Colors, cx: &mut Context<Self>) -> Vec<Div> {
@@ -701,6 +731,7 @@ impl Render for SettingsWindow {
         let appearance = self.appearance_rows(c, cx);
         let font = self.font_rows(c, window, cx);
         let editor = self.editor_rows(c, cx);
+        let updates = self.update_rows(c, cx);
         let keyboard = self.keyboard_sections(c, cx);
         let files = Self::file_rows(c, cx);
         div()
@@ -752,6 +783,7 @@ impl Render for SettingsWindow {
                     .child(section("THEME", c, appearance))
                     .child(section("FONT", c, font))
                     .child(section("EDITOR", c, editor))
+                    .child(section("UPDATES", c, updates))
                     .child(section("FILES", c, files))
                     .child(
                         div()

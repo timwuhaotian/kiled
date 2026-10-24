@@ -253,6 +253,8 @@ commands! {
     OpenSettings: "open_settings", "Settings…", App, App, crate::OpenSettings, ["cmd-,"];
     OpenKeymap: "open_keymap", "Keyboard Shortcuts…", App, App, crate::OpenKeymap,
         ["cmd-k cmd-s"];
+    CheckForUpdates: "check_for_updates", "Check for Updates…", App, App,
+        crate::update::CheckForUpdates, [];
     Hide: "hide", "Hide Kiled", App, App, crate::Hide, ["cmd-h"];
     HideOthers: "hide_others", "Hide Others", App, App, crate::HideOthers, ["cmd-alt-h"];
     Quit: "quit", "Quit Kiled", App, App, crate::Quit, ["cmd-q"];

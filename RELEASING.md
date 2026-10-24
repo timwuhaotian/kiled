@@ -3,7 +3,8 @@
 Maintainers build, sign and notarize releases locally; CI never builds them. Users always get
 one file, [`Kiled-arm64.dmg`](https://github.com/timwuhaotian/kiled/raw/main/releases/Kiled-arm64.dmg),
 and never see a version number: versions are for us (`Cargo.toml`, Info.plist, `CHANGELOG.md`,
-commit messages).
+commit messages). Installed copies read `releases/latest.toml` beside it to update themselves
+(DESIGN.md §13).
 
 A release, in order. "Patch" means bumping the last number (0.0.4 → 0.0.5).
 
@@ -25,7 +26,7 @@ A release, in order. "Patch" means bumping the last number (0.0.4 → 0.0.5).
 5. **Build:** `scripts/release.sh`. It signs with Developer ID and the hardened runtime,
    notarizes and staples the app, then the DMG, checks both with `spctl`, and overwrites
    `releases/Kiled-arm64.dmg`, its `.sha256` and `releases/latest.toml` (the version and
-   checksum, for the updater Kiled will get, as Kil has). It fails unless Apple accepts both.
+   checksum every installed Kiled's updater reads). It fails unless Apple accepts both.
    Notarization takes a few minutes; credentials are described at the top of the script.
 6. **Install it here**, from the DMG, as a user would get it:
    ```sh
@@ -44,5 +45,8 @@ A release, in order. "Patch" means bumping the last number (0.0.4 → 0.0.5).
    git push origin main
    curl -sIL https://github.com/timwuhaotian/kiled/raw/main/releases/Kiled-arm64.dmg | grep -i content-length
    ```
-   The length matches `stat -f %z releases/Kiled-arm64.dmg`.
+   The length matches `stat -f %z releases/Kiled-arm64.dmg`. Installed copies of Kiled find
+   the release within six hours, or at their next launch, and install it when they quit.
+   GitHub serves raw files through a cache for about five minutes after a push, so until then
+   **Check for Updates…** may still say Kiled is up to date.
 

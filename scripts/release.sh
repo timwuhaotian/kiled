@@ -3,7 +3,7 @@
 # releases/, which git tracks (DESIGN.md §11). Run locally; CI never builds releases.
 # Usage: scripts/release.sh   → releases/Kiled-arm64.dmg (+ .sha256, latest.toml), replacing the last
 # release: downloads are always the latest, and the version is only for us (Info.plist, git
-# history) and for the updater Kiled will get, which will read latest.toml (DESIGN.md §11).
+# history) and for the updater in every installed Kiled, which reads latest.toml (DESIGN.md §13).
 #
 # Signing: KILED_SIGN_IDENTITY, default "Developer ID Application" (the one such identity in the
 # login keychain).

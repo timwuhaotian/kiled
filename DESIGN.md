@@ -41,10 +41,11 @@ Build status (0.0.1):
 | A9 | **⌘P** opens files of the folder by fuzzy name (`.gitignore` respected), the files opened lately first (so with nothing typed, Enter goes back to the previous file), or any file on the Mac by a path starting with `~` or `/` (after ⇧⌘P's `>` too); while the folder is still being listed it says so, and fills in when done; pressed again it steps down the list. **⇧⌘P** runs any command by name and shows its keys, **⌃G** goes to `line[:column]`. **⌃-** / **⌃⇧-** go back and forward across jumps. | `workspace` / `picker` tests. |
 | A10 | Nothing unsaved is lost: closing a dirty tab, opening another folder, closing the window and quitting ask Save / Don't Save / Cancel. A file changed on disk reloads if it has no edits; with edits, the user is told, and saving asks: Overwrite, Reload from Disk, or Cancel. **Revert File** (File menu, palette) reloads on demand, as one undoable step. Saving replaces a file atomically (temp file, fsync, rename) with its permissions, group, ACL and extended attributes, through a symlink that stays one; hard links and others' files are written in place and put back if that fails part way; a read-only file is refused. Line endings and a BOM are kept. Binary and non-UTF-8 files are refused, not mangled. | `files` / `document` / `workspace` tests. |
 | A11 | **Keys are VS Code's** (§8), all rebindable: **Settings ▸ Keyboard** records a shortcut per command (refusing one that is taken, with **Reset**), and `~/.config/kiled/keymap.toml` takes any binding, two-stroke ones included. **Keyboard Shortcuts…** (**⌘K ⌘S**) opens that file in Kiled. Changes apply when the window is focused again; the menus show the keys bound. | `keymap` / `config` / `settings_window` tests. |
-| A12 | **Settings…** (**⌘,**): Kil's five themes, sidebar opacity, font family and size, tab size, spaces or tabs, cursor blink; `config.toml` holds them and `[servers]` commands. **⌘= ⌘- ⌘0** zoom. | `settings` tests; manual. |
+| A12 | **Settings…** (**⌘,**): Kil's five themes, sidebar opacity, font family and size, tab size, spaces or tabs, cursor blink, automatic updates (§13); `config.toml` holds them and `[servers]` commands. **⌘= ⌘- ⌘0** zoom. | `settings` tests; manual. |
 | A13 | **Performance.** Idle CPU 0.0% with the cursor not blinking, < 1% blinking. A keystroke (edit, incremental reparse, highlighting a screenful) under 1 ms on average on a 50,000-line file. First frame within 200 ms of launch. | §5.4 [measured]. |
 | A14 | **Process hygiene.** Each language server runs in its own process group; stopping it (or its output closing) gives it 1 s, then kills the group and the server itself, then reaps it. Quitting sends the groups SIGTERM and never waits on a server; nothing outlives Kiled, a `kill -9` of Kiled included. A server that doesn't answer `initialize` in 30 s is stopped and says so. | `client` tests (a fake server's background child dies with it; one that leaves its group is still killed, without holding up quitting); `lsp` tests; manual (§6.3). |
 | A15 | The release is signed with Developer ID, notarized and stapled; `spctl -a -vv` accepts it. | §11 |
+| A16 | Kiled updates itself (§13). Five seconds after launch and every six hours, with `auto_update` on (the default), it reads `releases/latest.toml` on `main`; for a newer version it downloads the DMG and keeps its app only if the SHA-256, the version, the Developer ID team (the running app's) and Apple's notarization all check out. Quitting Kiled, however it quits, then replaces the bundle, so the next launch is the new version. **Kiled ▸ Check for Updates…** (the palette's command too, or **Check Now** in Settings) opens a window that follows the check (checking, the download's bytes against its size, verifying) and then says it is up to date, why it can't update, or offers **Restart Now** and **Later**; the menu item becomes **Restart to Update to x.y.z**, which quits as ⌘Q does, asking about unsaved files, and reopens the new app. An ad-hoc-signed build, a bare binary and a copy run from the DMG never replace themselves. | `update` tests (the committed release passes every check, the download reports its bytes, the swap), `update_window` test (the window follows a check to **Later**) + manual: a Developer ID build labelled older updates on quit. |
 
 ### Non-goals (0.0.1)
 
@@ -58,7 +59,7 @@ Left out on purpose; each can come later without reshaping what exists.
   steps).
 - Encodings other than UTF-8; files over 256 MB. Over 8 MB a file opens without syntax and
   without a language server.
-- Auto-update (Kil has one; Kiled's comes later), Intel builds, the Mac App Store.
+- Intel builds, the Mac App Store.
 - Installing language servers: Kiled finds them, and says how to install one it doesn't find.
 
 ---
@@ -396,8 +397,8 @@ Settings, Hide, Quit, which work in the Settings window too).
 | ⌥⌫ ⌥⌦, ⌘⌫ ⌘⌦ ⌃K | delete word / to line edge | ⌘← ⌘→ Home End ⌃A ⌃E | line start (smart) / end |
 
 Arrows, ⌥←→ (words), ⌘↑↓ (top/bottom), PgUp/PgDn and their ⇧ forms select; ⌃B ⌃F ⌃P ⌃N
-move as in every macOS text field. **Revert File** has no key, as in VS Code: it is in the
-File menu and the palette.
+move as in every macOS text field. **Revert File** and **Check for Updates…** have no key, as
+in VS Code: they are in the menus and the palette.
 
 **Overrides** are Kil's design, unchanged: `~/.config/kiled/keymap.toml` `[bindings]` maps
 keys to command names; an entry replaces whatever its keys did in any scope (so a user key
@@ -423,6 +424,7 @@ tab_size = 4               # for files that don't show their own indentation
 insert_spaces = true
 cursor_blink = true
 sidebar_opacity = 0.8      # 0–1; leave out for 0.92
+auto_update = true         # check, download and install updates when Kiled quits (§13)
 
 [servers]
 rust-analyzer = ["/opt/homebrew/bin/rust-analyzer"]   # replace a server's command
@@ -454,8 +456,9 @@ As Kil: `scripts/bundle.sh [debug|release]` builds `Kiled.app` (icon from
 `packaging/app-icon.png` through `sips` and `iconutil`, ad-hoc signed).
 `scripts/release.sh` signs with the Developer ID identity (team `43VLF3KTFZ`) and the
 hardened runtime, notarizes and staples the app and then the DMG, checks both with `spctl`,
-and writes `releases/Kiled-arm64.dmg`, its `.sha256` and `latest.toml`, committed to the repo.
-CI never builds releases; it runs fmt, clippy and the tests on Apple silicon.
+and writes `releases/Kiled-arm64.dmg`, its `.sha256` and `latest.toml` (the version and
+checksum installed copies read to update themselves, §13), committed to the repo. CI never
+builds releases; it runs fmt, clippy and the tests on Apple silicon.
 
 Kiled needs **no entitlements** under the hardened runtime: it doesn't load unsigned code,
 use JIT or reach the camera; the language servers it starts are separate programs. The
@@ -479,3 +482,51 @@ material, scaled down beside a text cursor (an I-beam) drawn in the K's own grad
 | tree-sitter error recovery with many errors (~6.5 ms/key, §5.4) | Within a 60 Hz frame. | Frame drops while typing → reparse off the main thread with a snapshot. |
 | Language servers change (TypeScript 7 dropped tsserver) | Ordered server candidates per language, version checks, `[servers]`. | A new default appears → one table entry. |
 | The cursor blink redraws the editor (0.83%) | Under the 1% budget. | Above it → the cursor as a cached view of its own, as Kil does. |
+
+---
+
+## 13. Updates (`update.rs`)
+
+Users get one file, the latest DMG, and never see a version (§11). The updater keeps that: it
+asks `main` what the latest release is, not GitHub's release API, because releases are commits.
+It is Kil's updater (its §15), with Kiled's Quit flow where Kil has its session server.
+
+- **What it reads.** `scripts/release.sh` writes `releases/latest.toml` (`version`, `sha256`)
+  next to the DMG, and the release commit carries both, so the two always describe the same
+  build. The app fetches it raw from `main` and compares it with its own `CARGO_PKG_VERSION`
+  as `major.minor.patch` numbers.
+- **When.** 5 s after launch, then every 6 h, while `auto_update` is on; one timer, so idle
+  CPU stays at zero (A13). A manual check runs whatever the setting: **Kiled ▸ Check for
+  Updates…**, the Command Palette's command of that name (`check_for_updates`, no default key,
+  as in VS Code), or **Check Now** in **Settings ▸ Updates**.
+- **Checks, in order**, on a background thread with the system's own tools (`curl`, `shasum`,
+  `hdiutil`, `ditto`, `codesign`, `spctl`), so no new dependency: the DMG's SHA-256 against the
+  manifest; the app's `CFBundleShortVersionString` against the manifest (a CDN serving a new
+  manifest with an old DMG fails here and is retried later); its signature against the running
+  app's Developer ID team (`codesign --verify --deep --strict -R`); and Gatekeeper's notarization
+  (`spctl --assess`). The manifest and DMG come from the same place, so the checksum only catches
+  corruption; the signature check is what keeps a tampered download out. The staged app lives in
+  `~/Library/Caches/dev.kil.editor/update` and is reused by the next check of that version.
+- **Install on quit.** `on_app_quit` copies the staged app beside the bundle (`.Kiled.app.new`),
+  renames the bundle away, renames the new one in, and deletes the old. The bundle is never
+  missing, and a failure puts the old one back. The running app keeps the code it loaded. A
+  bundle replaced by hand meanwhile with something as new stays, and the download goes.
+- **The update window** (`update_window.rs`). A manual check opens it at once, or brings it
+  forward, and joins a background check already under way. The check's thread writes its step
+  to a shared `Progress` (checking; downloading, with the bytes on disk and the size from the
+  `Content-Length` curl dumps with `-D`; verifying), which the window reads every 100 ms while
+  it is working. A known size fills a bar, redrawn at each reading; otherwise a bar sweeps.
+  At the end it shows a mark and the outcome: **Restart Now** (Return) and **Later**, or **OK**.
+  **Hide** closes it during the check, and the outcome opens it again. A background check
+  opens nothing. Once done it draws nothing more, so idle CPU stays at zero (A13).
+- **Restart to Update** (the menu item once a release is ready, and **Restart Now**) is the
+  Quit flow of A10: unsaved files are asked about, and Cancel leaves everything as it was,
+  the staged update included. Only a quit that goes ahead marks the reopen, and a `/bin/sh`
+  then waits for this process to exit before `open`ing the new bundle.
+- **Not updated:** a bare binary (`cargo run`), an ad-hoc-signed bundle (a local build), a copy
+  running from the DMG or translocated by Gatekeeper, and a bundle in a folder Kiled can't
+  write. A manual check says which.
+- **Tested** by `update` tests: version order, the manifest, which bundles are replaceable, the
+  swap and its rollback, and the committed `releases/` passing every check `stage` makes (from a
+  `file://` URL, against team 43VLF3KTFZ); and `update_window`'s test, which follows a check
+  from checking through a half-done download to ready, then dismisses it.

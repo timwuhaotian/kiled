@@ -31,6 +31,7 @@ use crate::{
     session::{SavedFile, SavedWindow, Session, Store},
     settings::{Settings, abbreviate_home},
     theme::Theme,
+    update,
 };
 
 actions!(
@@ -583,10 +584,15 @@ impl Workspace {
         false
     }
 
-    fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Quits once unsaved changes are saved or given up; with `reopen`, the new Kiled opens
+    /// once this one is gone (Restart to Update). A cancelled prompt changes nothing.
+    fn quit(&mut self, reopen: bool, window: &mut Window, cx: &mut Context<Self>) {
         let editors = self.editors.clone();
-        self.confirm_unsaved(editors, window, cx, |this, _, cx| {
+        self.confirm_unsaved(editors, window, cx, move |this, _, cx| {
             this.depart(cx);
+            if reopen {
+                update::reopen_on_quit(cx);
+            }
             cx.quit();
         });
     }
@@ -1154,19 +1160,36 @@ fn home() -> PathBuf {
 
 /// Runs `Quit` in the editor window, for when another window (Settings) has focus.
 pub fn quit_app(cx: &mut App) {
-    match cx
-        .windows()
-        .iter()
-        .find_map(AnyWindowHandle::downcast::<Workspace>)
-    {
-        Some(workspace) => {
+    quit_in_window(false, cx);
+}
+
+/// Restart to Update: quits as `quit_app` does, asking about unsaved files, and the new
+/// Kiled opens once this one has installed it.
+pub fn quit_to_update(cx: &mut App) {
+    quit_in_window(true, cx);
+}
+
+/// Runs the Quit flow in the editor window once the current update is over: a menu action
+/// is dispatched inside the active window's update, and a window can't be updated again
+/// from inside its own.
+fn quit_in_window(reopen: bool, cx: &mut App) {
+    cx.defer(move |cx| {
+        let workspace = cx
+            .windows()
+            .iter()
+            .find_map(AnyWindowHandle::downcast::<Workspace>);
+        if let Some(workspace) = workspace {
             let _ = workspace.update(cx, |this, window, cx| {
                 window.activate_window();
-                this.quit(window, cx);
+                this.quit(reopen, window, cx);
             });
+        } else {
+            if reopen {
+                update::reopen_on_quit(cx);
+            }
+            cx.quit();
         }
-        None => cx.quit(),
-    }
+    });
 }
 
 /// Re-applies the config files in the editor window after the Settings window wrote one.
@@ -1255,7 +1278,7 @@ fn bind_actions(root: Stateful<gpui::Div>, cx: &mut Context<Workspace>) -> State
             let base = this.base_font_size;
             this.set_font_size(|_| base, cx);
         }))
-        .on_action(cx.listener(|this, _: &crate::Quit, window, cx| this.quit(window, cx)));
+        .on_action(cx.listener(|this, _: &crate::Quit, window, cx| this.quit(false, window, cx)));
     bind_open_editor(root, cx)
 }
 

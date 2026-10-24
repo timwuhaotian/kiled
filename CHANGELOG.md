@@ -6,6 +6,13 @@ versions below are how we track releases, and match `Cargo.toml` and the app's I
 
 ## Unreleased
 
+- **Kiled updates itself.** It checks at launch and every six hours, downloads a new release in
+  the background, checks its checksum, Developer ID signature and notarization, and installs
+  it when Kiled quits. **Kiled ▸ Check for Updates…** (in the Command Palette too) checks now
+  and offers **Restart Now**, which asks about unsaved files as Quit does. Turn it off with
+  **Settings ▸ Updates** or `auto_update = false`. This release has to be installed by hand
+  once; later ones arrive on their own.
+
 ## 0.0.3 — 2026-10-24
 
 - **Go to File** lists the files you opened lately first, so ⌘P and Enter go back to the

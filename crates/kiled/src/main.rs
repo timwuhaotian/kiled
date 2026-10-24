@@ -14,6 +14,8 @@ mod settings;
 mod settings_window;
 mod text_field;
 mod theme;
+mod update;
+mod update_window;
 mod workspace;
 
 use std::{path::PathBuf, sync::OnceLock, time::Instant};
@@ -78,8 +80,8 @@ fn edit_menu() -> Menu {
 }
 
 /// The menu bar. Set again whenever the keymap changes, so the shortcuts it shows are the
-/// ones bound.
-fn menus(_: &App) -> Vec<Menu> {
+/// ones bound, and when an update is ready to install.
+fn menus(cx: &App) -> Vec<Menu> {
     use editor as e;
     use workspace as w;
     vec![
@@ -88,6 +90,7 @@ fn menus(_: &App) -> Vec<Menu> {
             items: vec![
                 MenuItem::action("Settings…", OpenSettings),
                 MenuItem::action("Keyboard Shortcuts…", OpenKeymap),
+                update::menu_item(cx),
                 MenuItem::separator(),
                 MenuItem::os_submenu("Services", SystemMenuType::Services),
                 MenuItem::separator(),
@@ -269,6 +272,7 @@ fn main() {
         .detach();
         let mut notices = config::apply(cx);
         register_app_actions(cx);
+        update::init(cx);
         let store = Store::standard();
         let (launch, frame) = launch(store.as_ref(), &mut notices);
         // Settings alone doesn't keep the app alive.

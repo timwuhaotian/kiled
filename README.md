@@ -62,6 +62,9 @@ and 28 MB.</sub>
   symlinks and line endings; read-only files are refused, and binary files are never
   opened as text.
 - **Comes back** with the folder, the tabs, their cursors and the window where you left them.
+- **Updates itself, quietly.** Kiled checks for a new release at launch and every six hours,
+  downloads it in the background, checks its checksum, Developer ID signature and Apple
+  notarization, and installs it when you quit.
 - **Idle means idle**: no CPU at rest, and a keystroke costs a fraction of a millisecond even
   in a 50,000-line file.
 - **Kil's five themes** (Night, Paper, Fjord, Ember, Dusk): code is colored from the same
@@ -71,7 +74,11 @@ and 28 MB.</sub>
 
 Download [`Kiled-arm64.dmg`](https://github.com/timwuhaotian/kiled/raw/main/releases/Kiled-arm64.dmg),
 open it, and drag **Kiled** to **Applications**. The app is signed with a Developer ID and
-notarized by Apple. `releases/` also holds the DMG's `.sha256`:
+notarized by Apple. From then on it keeps itself up to date: a new release is installed when
+you quit Kiled, and **Kiled ▸ Check for Updates…** checks right away, in a small window that
+shows the download and offers **Restart Now** or **Later**; once a release is ready, the menu
+item reads **Restart to Update** (turn automatic updates off in **Settings ▸ Updates**).
+`releases/` also holds the DMG's `.sha256`:
 
 ```sh
 shasum -a 256 -c Kiled-arm64.dmg.sha256
@@ -117,7 +124,9 @@ ditto target/release/Kiled.app /Applications/Kiled.app
 ### Making a release (maintainers)
 
 Releases are built, signed and notarized locally and committed under `releases/`; CI only
-checks pull requests and `main`. [`RELEASING.md`](RELEASING.md) has the steps.
+checks pull requests and `main`. [`RELEASING.md`](RELEASING.md) has the steps; the build itself
+is `scripts/release.sh` → `releases/Kiled-arm64.dmg` + `.sha256` + `latest.toml`, which
+installed copies read to find the update.
 
 ## Using Kiled
 
@@ -170,6 +179,7 @@ tab_size = 4               # for files that don't show their own indentation
 insert_spaces = true
 cursor_blink = true
 sidebar_opacity = 0.8      # 0–1; leave out for the default
+auto_update = true         # check, download and install updates when Kiled quits
 
 [servers]                  # replace a language server's command, or turn it off
 rust-analyzer = ["/opt/homebrew/bin/rust-analyzer"]

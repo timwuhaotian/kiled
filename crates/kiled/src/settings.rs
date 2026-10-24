@@ -23,6 +23,8 @@ pub struct Settings {
     pub cursor_blink: bool,
     /// The sidebar background's opacity, 0–1, over the blurred desktop. `None`: the theme's.
     pub sidebar_opacity: Option<f32>,
+    /// Check for, download and install updates without being asked (DESIGN.md §13).
+    pub auto_update: bool,
     /// `[servers]`: a language server's command, replacing the default; an empty one turns
     /// that server off.
     pub servers: BTreeMap<String, Vec<String>>,
@@ -40,6 +42,7 @@ impl Default for Settings {
             insert_spaces: true,
             cursor_blink: true,
             sidebar_opacity: None,
+            auto_update: true,
             servers: BTreeMap::new(),
         }
     }
@@ -55,6 +58,7 @@ struct SettingsFile {
     insert_spaces: Option<bool>,
     cursor_blink: Option<bool>,
     sidebar_opacity: Option<f32>,
+    auto_update: Option<bool>,
     servers: BTreeMap<String, Vec<String>>,
 }
 
@@ -89,6 +93,7 @@ impl Settings {
             insert_spaces: file.insert_spaces.unwrap_or(defaults.insert_spaces),
             cursor_blink: file.cursor_blink.unwrap_or(defaults.cursor_blink),
             sidebar_opacity,
+            auto_update: file.auto_update.unwrap_or(defaults.auto_update),
             servers: file.servers,
         })
     }
@@ -221,6 +226,12 @@ mod tests {
         assert!(Settings::parse("fontsize = 15.0").is_err());
         assert!(Settings::parse("font_size = 400.0").is_err());
         assert!(Settings::parse("tab_size = 0").is_err());
+    }
+
+    #[test]
+    fn auto_update_should_default_to_on() {
+        assert!(Settings::parse("").unwrap().auto_update);
+        assert!(!Settings::parse("auto_update = false").unwrap().auto_update);
     }
 
     #[test]
