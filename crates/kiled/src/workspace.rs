@@ -126,6 +126,8 @@ struct Chrome {
     editor_bg: Hsla,
     sidebar_bg: Hsla,
     bar_bg: Hsla,
+    tab_bg: Hsla,
+    tab_hover_bg: Hsla,
     text: Hsla,
     muted: Hsla,
     hover: Hsla,
@@ -142,6 +144,8 @@ impl Chrome {
             editor_bg: theme.editor_bg,
             sidebar_bg: theme.sidebar_bg,
             bar_bg: theme.chrome_bg,
+            tab_bg: theme.tab_bg,
+            tab_hover_bg: theme.tab_hover_bg,
             text: theme.chrome_text,
             muted: theme.muted,
             hover: theme.hover,
@@ -1372,61 +1376,8 @@ impl Workspace {
             .iter()
             .enumerate()
             .map(|(index, editor)| {
-                let (title, dirty, path) = {
-                    let editor = editor.read(cx);
-                    let path: Option<SharedString> =
-                        editor.path().map(|path| path.display().to_string().into());
-                    (editor.title(), editor.is_dirty(), path)
-                };
                 let folder = folders.get(index).cloned().flatten();
-                let active = Some(index) == self.active;
-                let close = Self::close_button(index, dirty, chrome, cx);
-                div()
-                    .id(("tab", index))
-                    .h_full()
-                    .pl_3()
-                    .pr_2()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap_2()
-                    .border_r_1()
-                    .border_color(chrome.divider)
-                    .text_size(px(12.5))
-                    .cursor_pointer()
-                    .when(active, |tab| {
-                        tab.bg(chrome.editor_bg)
-                            .text_color(chrome.text)
-                            .border_t_2()
-                            .border_color(chrome.accent)
-                    })
-                    .when(!active, |tab| {
-                        tab.text_color(chrome.muted)
-                            .hover(|style| style.bg(chrome.hover))
-                    })
-                    .on_mouse_down(
-                        MouseButton::Middle,
-                        cx.listener(move |this, _, window, cx| {
-                            this.close_editor_at(index, window, cx);
-                        }),
-                    )
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.activate(index, window, cx);
-                    }))
-                    .when_some(path, |tab, path| {
-                        tab.tooltip(move |_, cx| cx.new(|_| Tooltip(path.clone())).into())
-                    })
-                    .child(title)
-                    .when_some(folder, |tab, folder| {
-                        tab.child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(chrome.muted)
-                                .child(folder),
-                        )
-                    })
-                    .child(close)
-                    .into_any_element()
+                self.tab(index, editor, folder, chrome, cx)
             })
             .collect();
         div()
@@ -1435,9 +1386,16 @@ impl Workspace {
             .flex_none()
             .flex()
             .bg(chrome.bar_bg)
-            .border_b_1()
-            .border_color(chrome.divider)
-            .when(!self.sidebar, |bar| bar.pl(px(TRAFFIC_LIGHTS)))
+            .when(!self.sidebar, |bar| {
+                bar.child(
+                    title_strip("tab-bar-lights")
+                        .w(px(TRAFFIC_LIGHTS))
+                        .h_full()
+                        .flex_none()
+                        .border_b_1()
+                        .border_color(chrome.divider),
+                )
+            })
             .child(
                 div()
                     .id("tabs")
@@ -1446,18 +1404,112 @@ impl Workspace {
                     .overflow_x_scroll()
                     .children(tabs),
             )
-            .child(title_strip("tab-bar-empty").flex_1().h_full())
+            .child(
+                title_strip("tab-bar-empty")
+                    .flex_1()
+                    .h_full()
+                    .border_b_1()
+                    .border_color(chrome.divider),
+            )
     }
 
-    /// A tab's ×, or ● while its file is unsaved; a click closes the tab.
+    /// One editor's tab. Every tab paints a solid background of its own; the active one
+    /// is the editor's surface and carries no bottom border, so it runs into the editor
+    /// below instead of being cut off from it.
+    fn tab(
+        &self,
+        index: usize,
+        editor: &Entity<Editor>,
+        folder: Option<SharedString>,
+        chrome: Chrome,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (title, dirty, path) = {
+            let editor = editor.read(cx);
+            let path: Option<SharedString> =
+                editor.path().map(|path| path.display().to_string().into());
+            (editor.title(), editor.is_dirty(), path)
+        };
+        let active = Some(index) == self.active;
+        let close = Self::close_button(index, dirty, active, chrome, cx);
+        div()
+            .id(("tab", index))
+            .group("tab")
+            .relative()
+            .h_full()
+            .min_w(px(110.))
+            .max_w(px(200.))
+            .pl_3()
+            .pr_2()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .border_r_1()
+            .border_color(chrome.divider)
+            .text_size(px(12.5))
+            .cursor_pointer()
+            .when(active, |tab| {
+                tab.bg(chrome.editor_bg).text_color(chrome.text)
+            })
+            .when(!active, |tab| {
+                tab.bg(chrome.tab_bg)
+                    .border_b_1()
+                    .text_color(chrome.muted)
+                    .hover(|style| style.bg(chrome.tab_hover_bg).text_color(chrome.text))
+            })
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(move |this, _, window, cx| {
+                    this.close_editor_at(index, window, cx);
+                }),
+            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.activate(index, window, cx);
+            }))
+            .when_some(path, |tab, path| {
+                tab.tooltip(move |_, cx| cx.new(|_| Tooltip(path.clone())).into())
+            })
+            .when(active, |tab| {
+                tab.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(2.))
+                        .bg(chrome.accent),
+                )
+            })
+            .child(div().min_w_0().truncate().child(title))
+            .when_some(folder, |tab, folder| {
+                tab.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.))
+                        .text_color(chrome.muted)
+                        .child(folder),
+                )
+            })
+            .child(close)
+            .into_any_element()
+    }
+
+    /// A tab's ×; a click closes the tab. An unsaved file shows a dot instead, which
+    /// gives way to the × while the pointer is over the tab, as does the × of a tab
+    /// that is neither active nor unsaved.
     fn close_button(
         index: usize,
         dirty: bool,
+        active: bool,
         chrome: Chrome,
         cx: &mut Context<Self>,
     ) -> Stateful<gpui::Div> {
+        let resting = active && !dirty;
         div()
             .id(("close-tab", index))
+            .relative()
+            .flex_none()
             .size(px(16.))
             .flex()
             .items_center()
@@ -1466,7 +1518,27 @@ impl Workspace {
             .text_size(px(12.))
             .text_color(chrome.muted)
             .hover(|style| style.bg(chrome.hover).text_color(chrome.text))
-            .child(if dirty { "●" } else { "×" })
+            .child(
+                div()
+                    .when(!resting, |cross| {
+                        cross
+                            .opacity(0.)
+                            .group_hover("tab", |style| style.opacity(1.))
+                    })
+                    .child("×"),
+            )
+            .when(dirty, |button| {
+                button.child(
+                    div()
+                        .absolute()
+                        .left(px(4.))
+                        .top(px(4.))
+                        .size(px(8.))
+                        .rounded_full()
+                        .bg(chrome.muted)
+                        .group_hover("tab", |style| style.opacity(0.)),
+                )
+            })
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 cx.stop_propagation();
                 this.close_editor_at(index, window, cx);

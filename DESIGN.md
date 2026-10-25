@@ -352,9 +352,12 @@ edited mark (the dot in its close button) while any tab has unsaved changes.
 read when first expanded and again when the window is focused; the active file revealed and
 marked; ↑↓←→ and Enter when focused (**⇧⌘E**), Escape to go back to the editor.
 
-**Tabs**: one per open file, the active one with an accent top border; ● for unsaved, × on
-the others; two tabs with one file name show their folders after it; middle-click closes;
-the pointer resting on one shows the file's full path.
+**Tabs**: one per open file, each on an opaque background of its own (never the blurred
+window showing through); the active one is the editor's surface with an accent top line
+and no bottom border, so it runs into the editor. A dot for unsaved, giving way to ×
+under the pointer, which is also when an inactive tab shows its ×; two tabs with one
+file name show their folders after it; middle-click closes; the pointer resting on one
+shows the file's full path.
 
 **Status bar**: problems (click: next), the server's status, a short message ("No definition
 found"); then `Ln, Col` with the selection or cursor count, indentation, line ending,

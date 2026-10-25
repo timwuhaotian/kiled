@@ -63,6 +63,10 @@ pub struct Theme {
     pub find_match: Hsla,
     pub sidebar_bg: Hsla,
     pub chrome_bg: Hsla,
+    /// An inactive tab's background; opaque, so a tab never shows what is behind it.
+    pub tab_bg: Hsla,
+    /// An inactive tab's background under the pointer; opaque like [`Theme::tab_bg`].
+    pub tab_hover_bg: Hsla,
     pub chrome_text: Hsla,
     pub muted: Hsla,
     pub hover: Hsla,
@@ -249,6 +253,11 @@ impl Theme {
         let opaque = |hex: u32| -> Hsla { rgb(hex).into() };
         let translucent = |hex: u32| -> Hsla { rgba(hex).into() };
         let accent = opaque(colors.accent);
+        let chrome_bg = opaque(colors.chrome);
+        // Pre-composited over the bar, so tabs are solid rather than a translucent wash
+        // over whatever the blurred window shows through.
+        let tab_bg = chrome_bg.blend(translucent(colors.hover));
+        let tab_hover_bg = chrome_bg.blend(translucent(colors.selected));
         Self {
             ansi: colors.ansi.map(opaque),
             editor_bg: opaque(colors.background),
@@ -263,7 +272,9 @@ impl Theme {
                 a: SIDEBAR_OPACITY,
                 ..translucent(colors.sidebar)
             },
-            chrome_bg: opaque(colors.chrome),
+            chrome_bg,
+            tab_bg,
+            tab_hover_bg,
             chrome_text: opaque(colors.text),
             muted: opaque(colors.muted),
             hover: translucent(colors.hover),
@@ -335,6 +346,19 @@ mod tests {
     fn contrast(a: Hsla, b: Hsla) -> f32 {
         let (a, b) = (luminance(a), luminance(b));
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn tab_backgrounds_should_be_opaque_and_off_the_editor_background() {
+        for name in ThemeName::ALL {
+            let theme = Theme::named(name);
+            for bg in [theme.tab_bg, theme.tab_hover_bg] {
+                assert_eq!(bg.a, 1., "{name:?}");
+                assert_ne!(bg, theme.editor_bg, "{name:?}");
+                assert_ne!(bg, theme.chrome_bg, "{name:?}");
+            }
+            assert_ne!(theme.tab_bg, theme.tab_hover_bg, "{name:?}");
+        }
     }
 
     #[test]
