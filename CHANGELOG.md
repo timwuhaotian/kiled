@@ -6,6 +6,13 @@ versions below are how we track releases, and match `Cargo.toml` and the app's I
 
 ## Unreleased
 
+## 0.0.5 — 2026-10-25
+
+- **Tabs sit on solid backgrounds of their own** instead of the tab bar showing through:
+  the active tab is the editor's surface and runs into the editor, inactive tabs are
+  distinct and brighten under the pointer. An unsaved file's dot gives way to × under the
+  pointer, which is also when an inactive tab shows its ×, and long file names truncate.
+
 ## 0.0.4 — 2026-10-24
 
 - **Kiled updates itself.** It checks at launch and every six hours, downloads a new release in
