@@ -434,7 +434,7 @@ pub fn keystroke_of(event: &Keystroke) -> Option<String> {
     // Releasing a lone modifier arrives as a keystroke named after it; that is not a shortcut.
     let alone = matches!(
         keys.as_str(),
-        "shift" | "control" | "alt" | "platform" | "fn"
+        "shift" | "control" | "alt" | "platform" | "fn" | "function"
     );
     (!alone).then_some(keys)
 }

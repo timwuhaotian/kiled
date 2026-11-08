@@ -174,10 +174,19 @@ impl SettingsWindow {
             return;
         }
         self.recording = Some(command);
-        self.recorder = Some(cx.intercept_keystrokes(|event, window, cx| {
-            if let Some(handle) = window.window_handle().downcast::<SettingsWindow>() {
+        let settings = cx.entity().downgrade();
+        self.recorder = Some(cx.intercept_keystrokes(move |event, window, cx| {
+            // The interceptor runs inside this window's own key dispatch, and a window
+            // can't be updated again from inside its own; the entity can.
+            if window
+                .window_handle()
+                .downcast::<SettingsWindow>()
+                .is_some()
+            {
                 let keystroke = event.keystroke.clone();
-                let _ = handle.update(cx, |this, _, cx| this.recorded(&keystroke, cx));
+                if let Err(err) = settings.update(cx, |this, cx| this.recorded(&keystroke, cx)) {
+                    log::error!("recording a key: {err:#}");
+                }
             }
             cx.stop_propagation();
         }));
@@ -849,6 +858,24 @@ mod tests {
             .update(cx, |this, _, _| {
                 this.recording = None;
                 this.recorder = None;
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn recording_should_take_the_next_keystroke_through_real_dispatch(cx: &mut TestAppContext) {
+        let settings = settings_window(cx);
+        settings
+            .update(cx, |this, _, cx| {
+                this.keys = keymap::resolve(None).0;
+                this.record(Command::ToggleSidebar, cx);
+            })
+            .unwrap();
+        // `cmd-s` is Save's, so recording refuses it instead of writing `keymap.toml`.
+        cx.simulate_keystrokes(settings.into(), "cmd-s");
+        settings
+            .update(cx, |this, _, _| {
+                assert_eq!((this.recording, this.error.is_some()), (None, true));
             })
             .unwrap();
     }

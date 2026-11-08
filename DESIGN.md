@@ -30,7 +30,7 @@ Build status (0.0.1):
 
 | # | Behavior | Proof |
 |---|----------|-------|
-| A1 | `kiled <folder> [files…]`, `open -a Kiled <path>`, Finder's Open With and **⌘O** open a folder in the explorer and files as tabs. A launch with no paths reopens the last folder, its tabs, their cursors and the window's frame. | `workspace` tests; manual. |
+| A1 | `kiled <folder> [files…]`, `open -a Kiled <path>`, Finder's Open With, files or a folder dropped on the window and **⌘O** open a folder in the explorer and files as tabs. A launch with no paths reopens the last folder, its tabs, their cursors and the window's frame. | `workspace` tests; manual. |
 | A2 | Typing goes through the IME handler (Pinyin composes in place, commits as one undo step). Brackets and the language's quotes pair themselves before blanks, wrap a selection, and are typed over; Enter keeps indentation, indents after an opener and splits `{}` onto three lines; Backspace removes an empty pair and steps back to indent stops. | `ops` tests, `editor` tests (IME commit, auto-close); manual Pinyin. |
 | A3 | Multiple cursors as VS Code makes them: **⌘D** (word, then each next whole-word match), **⇧⌘L**, **⌥⌘↑/↓**, **⌥-click**; Escape goes back to one. Every edit, copy and paste applies at each cursor; a paste with as many lines as cursors spreads one line each. | `ops` tests; `cmd_d_should_add…`, `alt_click_should_add_a_cursor`. |
 | A4 | VS Code's line commands: **⌥↑/↓** move lines, **⇧⌥↑/↓** copy them, **⇧⌘K** deletes them, **⌘↩/⇧⌘↩** open a line, **⌘]/⌘[** indent, **⌘/** toggles comments, **⌘L** selects lines, **⌘C/⌘X** with nothing selected take the whole line and paste it back as a line. | `ops` tests; `the_default_keys_should_edit_like_vs_code`. |
@@ -54,7 +54,7 @@ Left out on purpose; each can come later without reshaping what exists.
 - Split editors and more than one window. Soft wrap, a minimap, folding.
 - Find in files, rename symbol, references, code actions, signature help, inlay hints,
   semantic tokens, snippets.
-- A file context menu, drag-and-drop of files, and permanent deletion from the explorer
+- A file context menu, drag-and-drop within the explorer, and permanent deletion from it
   (the Trash is as far as it goes).
 - Grapheme clusters: the cursor moves by code point (an emoji with modifiers takes several
   steps).

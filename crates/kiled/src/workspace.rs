@@ -15,9 +15,9 @@ use std::{
 
 use gpui::{
     AnyElement, AnyView, AnyWindowHandle, App, AsyncWindowContext, ClickEvent, ClipboardItem,
-    Context, Entity, EntityId, FocusHandle, Focusable, Hsla, MouseButton, PathPromptOptions,
-    PromptLevel, SharedString, Stateful, StyleRefinement, Subscription, Task, WeakEntity, Window,
-    actions, div, prelude::*, px,
+    Context, Entity, EntityId, ExternalPaths, FocusHandle, Focusable, Hsla, MouseButton,
+    PathPromptOptions, PromptLevel, SharedString, Stateful, StyleRefinement, Subscription, Task,
+    WeakEntity, Window, actions, div, prelude::*, px,
 };
 use kiled_core::files;
 
@@ -1497,29 +1497,38 @@ fn quit_in_window(reopen: bool, cx: &mut App) {
 
 /// Re-applies the config files in the editor window after the Settings window wrote one.
 pub fn reload_config(cx: &mut App) {
-    for workspace in cx
-        .windows()
-        .iter()
-        .filter_map(AnyWindowHandle::downcast::<Workspace>)
-    {
-        let _ = workspace.update(cx, |this, window, cx| {
-            this.reload_config_if_changed(window, cx);
-        });
-    }
+    cx.defer(|cx| {
+        for workspace in cx
+            .windows()
+            .iter()
+            .filter_map(AnyWindowHandle::downcast::<Workspace>)
+        {
+            if let Err(err) = workspace.update(cx, |this, window, cx| {
+                this.reload_config_if_changed(window, cx);
+            }) {
+                log::error!("reloading config: {err:#}");
+            }
+        }
+    });
 }
 
 /// Opens files and folders handed to the app (Finder, `open -a Kiled`, the command line).
+/// Deferred like `quit_in_window`: a menu or key action is dispatched inside the
+/// workspace window's own update, which can't be updated again from inside itself.
 pub fn open_in_window(paths: Vec<PathBuf>, cx: &mut App) {
-    if let Some(workspace) = cx
-        .windows()
-        .iter()
-        .find_map(AnyWindowHandle::downcast::<Workspace>)
-    {
-        let _ = workspace.update(cx, |this, window, cx| {
-            window.activate_window();
-            this.open_paths(paths, window, cx);
-        });
-    }
+    cx.defer(move |cx| {
+        if let Some(workspace) = cx
+            .windows()
+            .iter()
+            .find_map(AnyWindowHandle::downcast::<Workspace>)
+            && let Err(err) = workspace.update(cx, |this, window, cx| {
+                window.activate_window();
+                this.open_paths(paths, window, cx);
+            })
+        {
+            log::error!("opening in window: {err:#}");
+        }
+    });
 }
 
 macro_rules! open_editor_handlers {
@@ -2127,6 +2136,11 @@ impl Render for Workspace {
             .key_context("Workspace")
             .track_focus(&self.focus_handle);
         bind_actions(root, cx)
+            // Files or a folder dropped anywhere on the window open as Finder handing
+            // them over does (DESIGN.md A1).
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.open_paths(paths.paths().to_vec(), window, cx);
+            }))
             .relative()
             .size_full()
             .flex()
@@ -2205,6 +2219,23 @@ mod tests {
                 .and_then(|editor| editor.read(cx).path().map(Path::to_owned))
         });
         assert_eq!(opened, Some(dir.join("src/main.rs")));
+    }
+
+    #[gpui::test]
+    fn keyboard_shortcuts_should_open_keymap_toml(cx: &mut TestAppContext) {
+        let (workspace, cx) = workspace(Launch::default(), cx);
+        cx.simulate_keystrokes("cmd-k cmd-s");
+        cx.run_until_parked();
+        let opened = workspace.read_with(cx, |this, cx| {
+            this.active_editor().and_then(|editor| {
+                editor
+                    .read(cx)
+                    .path()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+        });
+        assert_eq!(opened.as_deref(), Some("keymap.toml"));
     }
 
     #[gpui::test]

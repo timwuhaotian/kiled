@@ -135,8 +135,8 @@ installed copies read to find the update.
 
 ## Using Kiled
 
-Open a folder or files with **⌘O**, by dropping them on the Dock icon, with Finder's
-**Open With**, or from a terminal with `open -a Kiled .`.
+Open a folder or files with **⌘O**, by dropping them on the window or the Dock icon, with
+Finder's **Open With**, or from a terminal with `open -a Kiled .`.
 
 | Keys | Action |
 |---|---|
