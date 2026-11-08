@@ -55,6 +55,11 @@ and 28 MB.</sub>
 - **Find and replace** in the file, with case, whole word and regex; **Go to File** by fuzzy
   name, the files you opened lately first, or any file on the Mac by its path (`~/.npmrc`);
   the **Command Palette**, **Go to Line**, and Back and Forward across jumps.
+- **The explorer manages files**: New File and New Folder named in place (a new file opens
+  at once), F2 to rename, ⌘⌫ to move to the Trash. Renames take their open tabs with them,
+  nothing on disk is ever overwritten, and a file with unsaved changes can't be trashed
+  until it is saved or closed. Reveal in Finder, Copy Path and Copy Relative Path are in
+  the File menu and the palette.
 - **Nothing unsaved is lost.** Closing a tab, opening another folder and quitting ask first.
   A file changed on disk reloads if you hadn't touched it, and saving over someone else's
   change asks, offering to reload instead. **Revert File** puts a file back as it is on disk,
@@ -144,7 +149,8 @@ Open a folder or files with **⌘O**, by dropping them on the Dock icon, with Fi
 | `⌃Space` / `⌘K ⌘I` / `⇧⌥F` | Suggest / hover / format document |
 | `F8` / `⇧F8` | Next / previous problem |
 | `⌘N` / `⌘S` / `⇧⌘S` / `⌥⌘S` | New file / save / save as / save all |
-| `⌘W` / `⌘K ⌘W` / `⇧⌘T` | Close / close all / reopen closed editor |
+| `⌘W` / `⌘K ⌘W` / `⌘K U` / `⇧⌘T` | Close / close all / close saved / reopen closed editor |
+| In the explorer: `F2` / `⌘⌫` | Rename / move to Trash |
 | `⌃⇥`, `⌥⌘→` / `⌃1`…`⌃9` | Next editor / editor by position |
 | `⌘B` / `⇧⌘E` | Toggle sidebar / show explorer |
 | `⌘=` / `⌘-` / `⌘0` | Zoom in / out / reset |

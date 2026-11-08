@@ -6,6 +6,20 @@ versions below are how we track releases, and match `Cargo.toml` and the app's I
 
 ## Unreleased
 
+## 0.0.6 — 2026-11-08
+
+- **The explorer manages files now.** New File and New Folder (named in place in the tree;
+  a new file opens at once), **F2** renames, and **⌘⌫** moves to the Trash after asking —
+  a file with unsaved changes is refused until it is saved or closed. Renaming a file or
+  folder takes its open editors with it. The sidebar also has Collapse and Refresh, and
+  Home/End jump to the first and last rows.
+- **Reveal in Finder**, **Copy Path** and **Copy Relative Path** for the file in front (File
+  menu, Command Palette).
+- **Close Other Editors**, **Close Editors to the Right** and **Close Saved Editors** (⌘K U),
+  asking about unsaved changes as closing one does.
+- **A new icon**, Kil's sibling redrawn on killi's: the same iced square, stick and spark,
+  with code lines and a text cursor where killi has its `>_`.
+
 ## 0.0.5 — 2026-10-25
 
 - **Tabs sit on solid backgrounds of their own** instead of the tab bar showing through:
