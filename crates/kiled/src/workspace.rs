@@ -14,10 +14,10 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, AnyView, AnyWindowHandle, App, AsyncWindowContext, ClickEvent, Context, Entity,
-    EntityId, FocusHandle, Focusable, Hsla, MouseButton, PathPromptOptions, PromptLevel,
-    SharedString, Stateful, StyleRefinement, Subscription, Task, WeakEntity, Window, actions, div,
-    prelude::*, px,
+    AnyElement, AnyView, AnyWindowHandle, App, AsyncWindowContext, ClickEvent, ClipboardItem,
+    Context, Entity, EntityId, FocusHandle, Focusable, Hsla, MouseButton, PathPromptOptions,
+    PromptLevel, SharedString, Stateful, StyleRefinement, Subscription, Task, WeakEntity, Window,
+    actions, div, prelude::*, px,
 };
 use kiled_core::files;
 
@@ -43,8 +43,14 @@ actions!(
         SaveAs,
         SaveAll,
         RevertFile,
+        RevealInFinder,
+        CopyPath,
+        CopyRelativePath,
         CloseEditor,
         CloseAllEditors,
+        CloseOtherEditors,
+        CloseEditorsToRight,
+        CloseSavedEditors,
         ReopenClosedEditor,
         NextEditor,
         PreviousEditor,
@@ -247,6 +253,17 @@ impl Workspace {
                         this.open_path(path, true, window, cx);
                     }
                     TreeEvent::Dismiss => this.focus_editor(window, cx),
+                    TreeEvent::Create { dir, name, is_dir } => {
+                        this.create_entry(dir, name, *is_dir, window, cx);
+                    }
+                    TreeEvent::Rename { from, name } => {
+                        this.rename_entry(from, name, cx);
+                    }
+                    TreeEvent::Trash(path) => this.trash_entry(path.clone(), window, cx),
+                    TreeEvent::Notice(message) => {
+                        this.notices.push(message.clone().into());
+                        cx.notify();
+                    }
                 },
             ),
         ];
@@ -339,6 +356,173 @@ impl Workspace {
                 this.feed_picker(cx);
             });
         }));
+    }
+
+    /// The tree and Quick Open's listing again, at once: something on disk just changed
+    /// here, so the rescan throttle (for changes elsewhere) doesn't apply.
+    fn refresh_files(&mut self, cx: &mut Context<Self>) {
+        self.tree.update(cx, FileTree::refresh);
+        self.listing = Listing::Never;
+        self.scan_project(cx);
+    }
+
+    // ── explorer file management ──────────────────────────────────────────────────────
+
+    fn create_entry(
+        &mut self,
+        dir: &Path,
+        name: &str,
+        is_dir: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let created = if is_dir {
+            files::create_dir(dir, name)
+        } else {
+            files::create_file(dir, name)
+        };
+        let path = match created {
+            Ok(path) => path,
+            Err(err) => {
+                self.notices
+                    .push(format!("Can't create {name}: {err}.").into());
+                cx.notify();
+                return;
+            }
+        };
+        self.refresh_files(cx);
+        if is_dir {
+            self.tree.update(cx, |tree, cx| tree.expand(&path, cx));
+        } else {
+            self.open_path(&path, true, window, cx);
+        }
+    }
+
+    fn rename_entry(&mut self, from: &Path, name: &str, cx: &mut Context<Self>) {
+        let to = match files::rename_entry(from, name) {
+            Ok(to) => to,
+            Err(err) => {
+                let old = from
+                    .file_name()
+                    .map_or_else(|| from.to_string_lossy(), |name| name.to_string_lossy());
+                self.notices
+                    .push(format!("Can't rename {old}: {err}.").into());
+                cx.notify();
+                return;
+            }
+        };
+        // Every editor on the renamed file, or in the renamed folder, follows it.
+        let folder = self.folder.clone();
+        for editor in self.editors.clone() {
+            let moved = editor
+                .read(cx)
+                .path()
+                .and_then(|path| remapped(path, from, &to));
+            if let Some(path) = moved {
+                editor.update(cx, |editor, cx| {
+                    editor.moved_to(path, folder.as_deref(), cx);
+                });
+            }
+        }
+        for path in self.recent.iter_mut().chain(&mut self.closed) {
+            if let Some(moved) = remapped(path, from, &to) {
+                *path = moved;
+            }
+        }
+        for location in self.back.iter_mut().chain(&mut self.forward) {
+            if let Some(moved) = remapped(&location.path, from, &to) {
+                location.path = moved;
+            }
+        }
+        self.refresh_files(cx);
+        let active = self
+            .active_editor()
+            .and_then(|editor| editor.read(cx).path().map(Path::to_owned));
+        self.tree
+            .update(cx, |tree, cx| tree.reveal(active.as_deref(), cx));
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    fn trash_entry(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let dirty = self.editors.iter().find_map(|editor| {
+            let editor = editor.read(cx);
+            let affected = editor.path().is_some_and(|open| open.starts_with(&path));
+            (affected && editor.is_dirty()).then(|| editor.title())
+        });
+        if let Some(title) = dirty {
+            self.notices
+                .push(format!("{title} has unsaved changes. Save or close it first.").into());
+            cx.notify();
+            return;
+        }
+        let name = path
+            .file_name()
+            .map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy())
+            .into_owned();
+        let message = format!("Move {name} to the Trash?");
+        let detail = "It stays in the Trash until you empty it, and Finder can put it back.";
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &message,
+            Some(detail),
+            &["Move to Trash", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            let _ = this.update_in(cx, |this, window, cx| {
+                // Asked again: an editor may have been dirtied while the prompt was up.
+                let dirty = this.editors.iter().any(|editor| {
+                    let editor = editor.read(cx);
+                    editor.is_dirty() && editor.path().is_some_and(|open| open.starts_with(&path))
+                });
+                if dirty {
+                    this.notices.push(
+                        format!("{name} has unsaved changes. Save or close it first.").into(),
+                    );
+                    cx.notify();
+                    return;
+                }
+                if let Err(err) = files::move_to_trash(&path) {
+                    this.notices
+                        .push(format!("Can't move {name} to the Trash: {err}.").into());
+                    cx.notify();
+                    return;
+                }
+                // From the back, so removing one doesn't shift the next one's index.
+                let mut indices: Vec<usize> = this
+                    .editors
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, editor)| {
+                        editor
+                            .read(cx)
+                            .path()
+                            .is_some_and(|open| open.starts_with(&path))
+                    })
+                    .map(|(index, _)| index)
+                    .collect();
+                indices.sort_unstable_by(|a, b| b.cmp(a));
+                for index in indices {
+                    this.remove_editor(index, window, cx);
+                }
+                // `remove_editor` files what it closed under Reopen Closed Editor; a
+                // trashed path doesn't belong there, nor in the other histories.
+                this.recent.retain(|recent| !recent.starts_with(&path));
+                this.closed.retain(|closed| !closed.starts_with(&path));
+                this.back
+                    .retain(|location| !location.path.starts_with(&path));
+                this.forward
+                    .retain(|location| !location.path.starts_with(&path));
+                this.refresh_files(cx);
+                this.schedule_save(cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Opens `path` in an editor, or activates the one it is already in.
@@ -565,6 +749,78 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Closes `targets` (asking about the dirty ones first), then puts `keep` back in
+    /// front if it survived: `remove_editor` activates a neighbour as each tab goes.
+    fn close_editors(
+        &mut self,
+        targets: Vec<Entity<Editor>>,
+        keep: Option<EntityId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if targets.is_empty() {
+            return;
+        }
+        let ids: Vec<EntityId> = targets.iter().map(Entity::entity_id).collect();
+        self.confirm_unsaved(targets, window, cx, move |this, window, cx| {
+            // Found again by id and taken from the back, so the indices still to go
+            // don't shift as editors come out.
+            let mut indices: Vec<usize> = ids
+                .iter()
+                .filter_map(|id| {
+                    this.editors
+                        .iter()
+                        .position(|editor| editor.entity_id() == *id)
+                })
+                .collect();
+            indices.sort_unstable_by(|a, b| b.cmp(a));
+            indices.dedup();
+            for index in indices {
+                this.remove_editor(index, window, cx);
+            }
+            if let Some(index) = keep.and_then(|id| {
+                this.editors
+                    .iter()
+                    .position(|editor| editor.entity_id() == id)
+            }) {
+                this.activate(index, window, cx);
+            }
+        });
+    }
+
+    fn close_other_editors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(active) = self.active_editor().cloned() else {
+            return;
+        };
+        let targets: Vec<Entity<Editor>> = self
+            .editors
+            .iter()
+            .filter(|editor| editor.entity_id() != active.entity_id())
+            .cloned()
+            .collect();
+        self.close_editors(targets, Some(active.entity_id()), window, cx);
+    }
+
+    fn close_editors_to_right(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(active) = self.active else {
+            return;
+        };
+        let keep = self.editors.get(active).map(Entity::entity_id);
+        let targets: Vec<Entity<Editor>> = self.editors.iter().skip(active + 1).cloned().collect();
+        self.close_editors(targets, keep, window, cx);
+    }
+
+    fn close_saved_editors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let keep = self.active_editor().map(Entity::entity_id);
+        let targets: Vec<Entity<Editor>> = self
+            .editors
+            .iter()
+            .filter(|editor| !editor.read(cx).is_dirty())
+            .cloned()
+            .collect();
+        self.close_editors(targets, keep, window, cx);
+    }
+
     /// Closes every editor without asking: the caller has dealt with unsaved changes.
     fn remove_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         while !self.editors.is_empty() {
@@ -664,6 +920,40 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    fn reveal_in_finder(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self
+            .active_editor()
+            .and_then(|editor| editor.read(cx).path().map(Path::to_owned))
+        else {
+            return;
+        };
+        // `open -R` selects the file in a Finder window; it is fire-and-forget.
+        if let Err(err) = std::process::Command::new("/usr/bin/open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+        {
+            log::error!("revealing {} in Finder: {err}", path.display());
+        }
+    }
+
+    fn copy_path(&mut self, relative: bool, cx: &mut Context<Self>) {
+        let Some(path) = self
+            .active_editor()
+            .and_then(|editor| editor.read(cx).path().map(Path::to_owned))
+        else {
+            return;
+        };
+        let text = match (&self.folder, relative) {
+            (Some(folder), true) => path.strip_prefix(folder).map_or_else(
+                |_| path.display().to_string(),
+                |rest| rest.display().to_string(),
+            ),
+            _ => path.display().to_string(),
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
     /// Puts the file in front back as it is on disk, as one undoable step.
@@ -1162,6 +1452,15 @@ fn home() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
 }
 
+/// Where `path` went when `from` was renamed to `to`: itself renamed, or carried along
+/// in a renamed folder. `None` when the rename doesn't touch it.
+fn remapped(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    if path == from {
+        return Some(to.to_owned());
+    }
+    path.strip_prefix(from).ok().map(|rest| to.join(rest))
+}
+
 /// Runs `Quit` in the editor window, for when another window (Settings) has focus.
 pub fn quit_app(cx: &mut App) {
     quit_in_window(false, cx);
@@ -1247,6 +1546,9 @@ fn bind_actions(root: Stateful<gpui::Div>, cx: &mut Context<Workspace>) -> State
         .on_action(cx.listener(|this, _: &SaveAs, window, cx| this.save_active(true, window, cx)))
         .on_action(cx.listener(|this, _: &SaveAll, window, cx| this.save_all(window, cx)))
         .on_action(cx.listener(|this, _: &RevertFile, _, cx| this.revert_active(cx)))
+        .on_action(cx.listener(|this, _: &RevealInFinder, _, cx| this.reveal_in_finder(cx)))
+        .on_action(cx.listener(|this, _: &CopyPath, _, cx| this.copy_path(false, cx)))
+        .on_action(cx.listener(|this, _: &CopyRelativePath, _, cx| this.copy_path(true, cx)))
         .on_action(cx.listener(|this, _: &CloseEditor, window, cx| {
             if let Some(index) = this.active {
                 this.close_editor_at(index, window, cx);
@@ -1255,6 +1557,15 @@ fn bind_actions(root: Stateful<gpui::Div>, cx: &mut Context<Workspace>) -> State
         .on_action(cx.listener(|this, _: &CloseAllEditors, window, cx| {
             let editors = this.editors.clone();
             this.confirm_unsaved(editors, window, cx, Workspace::remove_all);
+        }))
+        .on_action(cx.listener(|this, _: &CloseOtherEditors, window, cx| {
+            this.close_other_editors(window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &CloseEditorsToRight, window, cx| {
+            this.close_editors_to_right(window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &CloseSavedEditors, window, cx| {
+            this.close_saved_editors(window, cx);
         }))
         .on_action(cx.listener(|this, _: &ReopenClosedEditor, window, cx| {
             this.reopen_closed(window, cx);
@@ -2322,6 +2633,100 @@ mod tests {
                 false,
                 "changed elsewhere\n".to_owned()
             )
+        );
+    }
+
+    fn three_files(name: &str) -> (PathBuf, Vec<SavedFile>) {
+        let dir = scratch(name);
+        std::fs::write(dir.join("extra.txt"), "extra\n").unwrap();
+        let file = |path: PathBuf| SavedFile {
+            path,
+            line: 1,
+            column: 1,
+        };
+        let files = vec![
+            file(dir.join("notes.txt")),
+            file(dir.join("src/main.rs")),
+            file(dir.join("extra.txt")),
+        ];
+        (dir, files)
+    }
+
+    fn open_paths(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<PathBuf> {
+        workspace.read_with(cx, |this, cx| {
+            this.editors
+                .iter()
+                .filter_map(|editor| editor.read(cx).path().map(Path::to_owned))
+                .collect()
+        })
+    }
+
+    #[gpui::test]
+    fn close_other_editors_should_keep_only_the_active_editor(cx: &mut TestAppContext) {
+        let (dir, files) = three_files("close-others");
+        let (workspace, cx) = workspace(
+            Launch {
+                folder: Some(dir.clone()),
+                files,
+                active: 1,
+                sidebar: true,
+            },
+            cx,
+        );
+        cx.dispatch_action(CloseOtherEditors);
+        cx.run_until_parked();
+        let active = workspace.read_with(cx, |this, cx| {
+            this.active_editor()
+                .and_then(|editor| editor.read(cx).path().map(Path::to_owned))
+        });
+        assert_eq!(
+            (open_paths(&workspace, cx), active),
+            (vec![dir.join("src/main.rs")], Some(dir.join("src/main.rs")))
+        );
+    }
+
+    #[gpui::test]
+    fn close_editors_to_the_right_should_keep_the_active_and_left_editors(cx: &mut TestAppContext) {
+        let (dir, files) = three_files("close-right");
+        let (workspace, cx) = workspace(
+            Launch {
+                folder: Some(dir.clone()),
+                files,
+                active: 1,
+                sidebar: true,
+            },
+            cx,
+        );
+        cx.dispatch_action(CloseEditorsToRight);
+        cx.run_until_parked();
+        assert_eq!(
+            open_paths(&workspace, cx),
+            vec![dir.join("notes.txt"), dir.join("src/main.rs")]
+        );
+    }
+
+    #[gpui::test]
+    fn close_saved_editors_should_keep_dirty_editors_open(cx: &mut TestAppContext) {
+        let (dir, files) = three_files("close-saved");
+        let (workspace, cx) = workspace(
+            Launch {
+                folder: Some(dir.clone()),
+                files,
+                active: 0,
+                sidebar: true,
+            },
+            cx,
+        );
+        cx.simulate_input("x");
+        cx.dispatch_action(CloseSavedEditors);
+        cx.run_until_parked();
+        let dirty = workspace.read_with(cx, |this, cx| {
+            this.active_editor()
+                .map(|editor| editor.read(cx).is_dirty())
+        });
+        assert_eq!(
+            (open_paths(&workspace, cx), dirty),
+            (vec![dir.join("notes.txt")], Some(true))
         );
     }
 }

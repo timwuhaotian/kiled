@@ -54,7 +54,8 @@ Left out on purpose; each can come later without reshaping what exists.
 - Split editors and more than one window. Soft wrap, a minimap, folding.
 - Find in files, rename symbol, references, code actions, signature help, inlay hints,
   semantic tokens, snippets.
-- Creating, renaming and deleting files from the explorer (do it in Finder or a terminal).
+- A file context menu, drag-and-drop of files, and permanent deletion from the explorer
+  (the Trash is as far as it goes).
 - Grapheme clusters: the cursor moves by code point (an emoji with modifiers takes several
   steps).
 - Encodings other than UTF-8; files over 256 MB. Over 8 MB a file opens without syntax and
@@ -202,6 +203,15 @@ editor reloads (one undoable step), a dirty one keeps its edits and is flagged; 
 asks whether to overwrite, or to reload instead. Revert File reloads the same way, on
 demand: Undo brings the edits back.
 
+The explorer's file management lives in the same module (`files::create_file`,
+`create_dir`, `rename_entry`, `move_to_trash`): names are validated (`validate_name`),
+nothing is ever overwritten (creation is `create_new`, a rename onto an existing entry is
+refused, a case-only rename allowed), and deletion is a move to `~/.Trash` with Finder's
+numbering on a clash (`a 2.txt`), so anything deleted can be put back. The workspace, not
+the tree, runs them: a rename remaps every open editor on the file or in the folder (and
+the recent, closed and back/forward paths), and trashing refuses while an affected editor
+has unsaved changes, asks, then closes the clean ones.
+
 ### 4.5 Find
 
 Every mode compiles to one `regex` (`(?i)` for case-insensitive, `\b…\b` for whole word,
@@ -348,9 +358,13 @@ desktop too; Settings lowers it). Top bar 38 px: the sidebar's title strip and t
 double-clicking empty title bar does what System Settings says. The window carries macOS's
 edited mark (the dot in its close button) while any tab has unsaved changes.
 
-**Sidebar** (240 px, **⌘B**): the folder's name, then the explorer — folders first, each
-read when first expanded and again when the window is focused; the active file revealed and
-marked; ↑↓←→ and Enter when focused (**⇧⌘E**), Escape to go back to the editor.
+**Sidebar** (240 px, **⌘B**): the folder's name, a toolbar (New File, New Folder, Collapse,
+Refresh), then the explorer — folders first, each read when first expanded and again when
+the window is focused; the active file revealed and marked; ↑↓←→, Home/End and Enter when
+focused (**⇧⌘E**), Escape to go back to the editor. New entries and renames are named in
+place in the tree: **F2** renames the selected entry, **⌘⌫** moves it to the Trash (after
+asking), Enter confirms a name and Escape or leaving the field cancels it; a name the core
+refuses keeps the field open with the reason in a notice. A new file opens at once.
 
 **Tabs**: one per open file, each on an opaque background of its own (never the blurred
 window showing through); the active one is the editor's surface with an accent top line
@@ -383,7 +397,7 @@ Settings, Hide, Quit, which work in the Settings window too).
 |---|---|---|---|
 | ⌘N / ⌘O | new file / open file or folder | ⌘P | go to file |
 | ⌘S / ⇧⌘S / ⌥⌘S | save / save as / save all | ⇧⌘P, F1 | command palette |
-| ⌘W / ⌘K ⌘W | close editor / close all | ⌃G | go to line |
+| ⌘W / ⌘K ⌘W / ⌘K U | close editor / close all / close saved | ⌃G | go to line |
 | ⇧⌘T | reopen closed editor | F12, ⌘-click | go to definition |
 | ⌥⌘→ ⌥⌘←, ⇧⌘] ⇧⌘[, ⌃⇥ ⌃⇧⇥ | next / previous editor | ⌃- / ⌃⇧- | back / forward |
 | ⌃1 … ⌃9 | editor 1 … last | F8 / ⇧F8 | next / previous problem |
@@ -401,7 +415,10 @@ Settings, Hide, Quit, which work in the Settings window too).
 
 Arrows, ⌥←→ (words), ⌘↑↓ (top/bottom), PgUp/PgDn and their ⇧ forms select; ⌃B ⌃F ⌃P ⌃N
 move as in every macOS text field. **Revert File** and **Check for Updates…** have no key, as
-in VS Code: they are in the menus and the palette.
+in VS Code: they are in the menus and the palette. So do **Reveal in Finder**, **Copy Path**,
+**Copy Relative Path**, **Close Other Editors** and **Close Editors to the Right** (all
+rebindable like the rest). The explorer's own keys — F2 rename, ⌘⌫ Trash, Home/End — are
+fixed, like its arrows.
 
 **Overrides** are Kil's design, unchanged: `~/.config/kiled/keymap.toml` `[bindings]` maps
 keys to command names; an entry replaces whatever its keys did in any scope (so a user key
@@ -469,8 +486,10 @@ Info.plist declares Kiled an **Alternate** editor for text, source code and fold
 With, drops on the Dock icon, `open -a`), so it never takes a file type from the app that has
 it, and folder-access strings for Desktop, Documents, Downloads and volumes.
 
-**The icon** is Kil's, made a sibling: the same squircle, the same lightning-bolt K in the same
-material, scaled down beside a text cursor (an I-beam) drawn in the K's own gradient and glow.
+**The icon** is killi's latest, made a sibling (`docs/icon.svg` is the source): the same navy
+squircle, the same iced square on its blue shadow, red stick, highlight, cheek and orange
+spark — with code lines and an I-beam text cursor in the same dark strokes where killi has
+its `>_`.
 
 ---
 

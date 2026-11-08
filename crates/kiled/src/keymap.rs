@@ -115,9 +115,20 @@ commands! {
     SaveAs: "save_as", "Save As…", File, Workspace, w::SaveAs, ["cmd-shift-s"];
     SaveAll: "save_all", "Save All", File, Workspace, w::SaveAll, ["cmd-alt-s"];
     RevertFile: "revert_file", "Revert File", File, Workspace, w::RevertFile, [];
+    RevealInFinder: "reveal_in_finder", "Reveal in Finder", File, Workspace,
+        w::RevealInFinder, [];
+    CopyPath: "copy_path", "Copy Path", File, Workspace, w::CopyPath, [];
+    CopyRelativePath: "copy_relative_path", "Copy Relative Path", File, Workspace,
+        w::CopyRelativePath, [];
     CloseEditor: "close_editor", "Close Editor", File, Workspace, w::CloseEditor, ["cmd-w"];
     CloseAllEditors: "close_all_editors", "Close All Editors", File, Workspace,
         w::CloseAllEditors, ["cmd-k cmd-w"];
+    CloseOtherEditors: "close_other_editors", "Close Other Editors", File, Workspace,
+        w::CloseOtherEditors, [];
+    CloseEditorsToRight: "close_editors_to_the_right", "Close Editors to the Right", File,
+        Workspace, w::CloseEditorsToRight, [];
+    CloseSavedEditors: "close_saved_editors", "Close Saved Editors", File, Workspace,
+        w::CloseSavedEditors, ["cmd-k u"];
     ReopenClosedEditor: "reopen_closed_editor", "Reopen Closed Editor", File, Workspace,
         w::ReopenClosedEditor, ["cmd-shift-t"];
     // Edit

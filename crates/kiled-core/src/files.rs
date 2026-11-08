@@ -285,6 +285,146 @@ pub fn list_project(root: &Path, limit: usize) -> Vec<PathBuf> {
     files
 }
 
+/// Checks a name for a new or renamed entry, as typed. A name is used as given: leading
+/// and trailing whitespace is kept, and only a wholly blank name is refused for it.
+///
+/// # Errors
+/// A short reason to show, if the name is empty or all whitespace, contains `/` or a NUL
+/// byte, is `.` or `..`, or is longer than 255 bytes.
+pub fn validate_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("a name can't be empty".to_owned());
+    }
+    if name.contains('/') {
+        return Err("a name can't contain /".to_owned());
+    }
+    if name.contains('\0') {
+        return Err("a name can't contain a NUL byte".to_owned());
+    }
+    if matches!(name, "." | "..") {
+        return Err("a name can't be . or ..".to_owned());
+    }
+    if name.len() > 255 {
+        return Err("a name can't be longer than 255 bytes".to_owned());
+    }
+    Ok(())
+}
+
+fn checked_name(name: &str) -> io::Result<()> {
+    validate_name(name).map_err(|reason| io::Error::new(io::ErrorKind::InvalidInput, reason))
+}
+
+fn already_exists(name: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!("{name} already exists"),
+    )
+}
+
+/// Creates a new empty file `name` in `dir`, never overwriting anything there.
+///
+/// # Errors
+/// If the name isn't valid, an entry of that name already exists, or the file can't be
+/// created.
+pub fn create_file(dir: &Path, name: &str) -> io::Result<PathBuf> {
+    checked_name(name)?;
+    let path = dir.join(name);
+    match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(_file) => Ok(path),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Err(already_exists(name)),
+        Err(err) => Err(err),
+    }
+}
+
+/// Creates a new folder `name` in `dir`, never overwriting anything there.
+///
+/// # Errors
+/// If the name isn't valid, an entry of that name already exists, or the folder can't be
+/// created.
+pub fn create_dir(dir: &Path, name: &str) -> io::Result<PathBuf> {
+    checked_name(name)?;
+    let path = dir.join(name);
+    match fs::create_dir(&path) {
+        Ok(()) => Ok(path),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Err(already_exists(name)),
+        Err(err) => Err(err),
+    }
+}
+
+/// Renames `from` to `name` in its own folder, never overwriting another entry. Changing
+/// only the case of the name is allowed, as macOS folders are usually case-insensitive.
+///
+/// # Errors
+/// If the name isn't valid, `from` isn't there, another entry of that name already exists,
+/// or the rename can't be done.
+pub fn rename_entry(from: &Path, name: &str) -> io::Result<PathBuf> {
+    checked_name(name)?;
+    let Some(parent) = from.parent() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "it doesn't have a folder",
+        ));
+    };
+    let to = parent.join(name);
+    if to == from {
+        return Ok(from.to_owned());
+    }
+    let source = fs::metadata(from)?;
+    match fs::metadata(&to) {
+        Ok(existing) if existing.ino() == source.ino() && existing.dev() == source.dev() => {}
+        Ok(_) => return Err(already_exists(name)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
+    fs::rename(from, &to)?;
+    Ok(to)
+}
+
+/// Moves `path` into Finder's Trash (`~/.Trash`), so it can be put back from there. On a
+/// name clash it is renamed as Finder does: `a.txt` becomes `a 2.txt`, then `a 3.txt`.
+///
+/// # Errors
+/// If `$HOME` isn't set, the Trash can't be made, or the entry can't be moved. An entry on
+/// another volume can't be renamed into `~/.Trash` there, and that error is left to show.
+pub fn move_to_trash(path: &Path) -> io::Result<PathBuf> {
+    let home = std::env::var_os("HOME").ok_or_else(|| io::Error::other("$HOME isn't set"))?;
+    move_to_trash_in(path, &PathBuf::from(home).join(".Trash"))
+}
+
+/// [`move_to_trash`] into `trash_dir`, which is made first if need be.
+fn move_to_trash_in(path: &Path, trash_dir: &Path) -> io::Result<PathBuf> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "it doesn't have a name"))?;
+    fs::create_dir_all(trash_dir)?;
+    let mut dest = trash_dir.join(name);
+    if fs::symlink_metadata(&dest).is_ok() {
+        let stem = Path::new(name).file_stem().map_or_else(
+            || name.to_string_lossy().into_owned(),
+            |stem| stem.to_string_lossy().into_owned(),
+        );
+        let extension = Path::new(name)
+            .extension()
+            .map(|extension| extension.to_string_lossy().into_owned());
+        let mut n = 2;
+        loop {
+            let candidate = extension.as_ref().map_or_else(
+                || format!("{stem} {n}"),
+                |extension| format!("{stem} {n}.{extension}"),
+            );
+            dest = trash_dir.join(candidate);
+            if fs::symlink_metadata(&dest).is_err() {
+                break;
+            }
+            n += 1;
+        }
+    }
+    // A rename won't cross volumes (`EXDEV`): an entry on another volume belongs in that
+    // volume's own trash, which is out of scope, so the error is passed on as it is.
+    fs::rename(path, &dest)?;
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
@@ -468,6 +608,157 @@ mod tests {
         assert_eq!(
             list_project(&dir, 100),
             vec![PathBuf::from(".gitignore"), PathBuf::from("src/main.rs")]
+        );
+    }
+
+    #[test]
+    fn validate_name_should_reject_illegal_names() {
+        let too_long = "n".repeat(256);
+        for name in ["", " ", " \t ", "a/b", "/", "a\0b", ".", "..", &too_long] {
+            assert!(validate_name(name).is_err(), "{name:?}");
+        }
+        assert_eq!(
+            validate_name("a/b"),
+            Err("a name can't contain /".to_owned())
+        );
+        assert!(validate_name("a.rs").is_ok());
+        assert!(validate_name(" a.rs ").is_ok());
+        assert!(validate_name(&"n".repeat(255)).is_ok());
+    }
+
+    #[test]
+    fn create_file_should_create_a_new_file_and_refuse_to_overwrite() {
+        let dir = scratch("create-file");
+        let path = create_file(&dir, "a.rs").unwrap();
+        assert_eq!(
+            (path.clone(), fs::read_to_string(&path).unwrap()),
+            (dir.join("a.rs"), String::new())
+        );
+        fs::write(&path, "kept").unwrap();
+        let err = create_file(&dir, "a.rs").unwrap_err();
+        assert_eq!(
+            (
+                err.kind(),
+                err.to_string().contains("already exists"),
+                fs::read_to_string(&path).unwrap()
+            ),
+            (io::ErrorKind::AlreadyExists, true, "kept".to_owned())
+        );
+        assert_eq!(
+            create_file(&dir, "a/b").unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn create_dir_should_create_a_new_folder_and_refuse_an_existing_one() {
+        let dir = scratch("create-dir");
+        let path = create_dir(&dir, "src").unwrap();
+        assert_eq!((path.clone(), path.is_dir()), (dir.join("src"), true));
+        let err = create_dir(&dir, "src").unwrap_err();
+        assert_eq!(
+            (err.kind(), err.to_string().contains("already exists")),
+            (io::ErrorKind::AlreadyExists, true)
+        );
+    }
+
+    #[test]
+    fn rename_entry_should_rename_a_file() {
+        let dir = scratch("rename");
+        let from = dir.join("a.txt");
+        fs::write(&from, "kept").unwrap();
+        let to = rename_entry(&from, "b.txt").unwrap();
+        assert_eq!(
+            (to.clone(), from.exists(), fs::read_to_string(&to).unwrap()),
+            (dir.join("b.txt"), false, "kept".to_owned())
+        );
+        assert_eq!(rename_entry(&to, "b.txt").unwrap(), to);
+        assert_eq!(
+            rename_entry(&dir.join("gone.txt"), "c.txt")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn rename_entry_should_refuse_to_overwrite_an_existing_entry() {
+        let dir = scratch("rename-existing");
+        let from = dir.join("a.txt");
+        let other = dir.join("b.txt");
+        fs::write(&from, "a").unwrap();
+        fs::write(&other, "b").unwrap();
+        let err = rename_entry(&from, "b.txt").unwrap_err();
+        assert_eq!(
+            (
+                err.kind(),
+                err.to_string().contains("already exists"),
+                fs::read_to_string(&from).unwrap(),
+                fs::read_to_string(&other).unwrap()
+            ),
+            (
+                io::ErrorKind::AlreadyExists,
+                true,
+                "a".to_owned(),
+                "b".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn rename_entry_should_allow_a_case_only_rename() {
+        let dir = scratch("rename-case");
+        let from = dir.join("a.rs");
+        fs::write(&from, "kept").unwrap();
+        let to = rename_entry(&from, "A.rs").unwrap();
+        assert_eq!(
+            (
+                to.clone(),
+                fs::read_to_string(&to).unwrap(),
+                fs::read_dir(&dir).unwrap().count()
+            ),
+            (dir.join("A.rs"), "kept".to_owned(), 1)
+        );
+    }
+
+    #[test]
+    fn move_to_trash_in_should_move_and_number_name_clashes() {
+        let dir = scratch("trash");
+        let source_dir = dir.join("source");
+        let trash = dir.join("trash");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("a.txt");
+        fs::write(&source, "first").unwrap();
+        let first = move_to_trash_in(&source, &trash).unwrap();
+        fs::write(&source, "second").unwrap();
+        let second = move_to_trash_in(&source, &trash).unwrap();
+        fs::write(&source, "third").unwrap();
+        let third = move_to_trash_in(&source, &trash).unwrap();
+        let bare = source_dir.join("b");
+        fs::write(&bare, "one").unwrap();
+        let bare_first = move_to_trash_in(&bare, &trash).unwrap();
+        fs::write(&bare, "two").unwrap();
+        let bare_second = move_to_trash_in(&bare, &trash).unwrap();
+        let second_text = fs::read_to_string(&second).unwrap();
+        assert_eq!(
+            (
+                first,
+                second,
+                third,
+                bare_first,
+                bare_second,
+                source.exists(),
+                second_text
+            ),
+            (
+                trash.join("a.txt"),
+                trash.join("a 2.txt"),
+                trash.join("a 3.txt"),
+                trash.join("b"),
+                trash.join("b 2"),
+                false,
+                "second".to_owned()
+            )
         );
     }
 

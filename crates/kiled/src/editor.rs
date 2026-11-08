@@ -438,6 +438,23 @@ impl Editor {
         Ok(())
     }
 
+    /// Its file was renamed on disk (from the explorer): follow it to `path` without
+    /// writing anything, re-registering with the server of its maybe-new language, as
+    /// `save_as` does after writing.
+    pub fn moved_to(&mut self, path: PathBuf, folder: Option<&Path>, cx: &mut Context<Self>) {
+        self.detach_server(cx);
+        let language = language::for_path(&path);
+        self.stamp = files::stamp(&path).ok();
+        self.path = Some(path);
+        if language != self.doc.language() {
+            self.doc.set_language(language);
+        }
+        self.conflict = false;
+        self.attach_server(folder, cx);
+        cx.emit(EditorEvent::TitleChanged);
+        cx.notify();
+    }
+
     /// The file on disk is not what was last read or written here.
     pub fn changed_on_disk(&self) -> bool {
         match (&self.path, self.stamp) {
