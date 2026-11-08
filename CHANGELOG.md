@@ -1,10 +1,17 @@
 # Changelog
 
 Notable changes to Kiled. The download is always the latest build
-([`Kiled-arm64.dmg`](https://github.com/timwuhaotian/kiled/raw/main/releases/Kiled-arm64.dmg)); the
+([`Kiled-arm64.dmg`](https://raw.githubusercontent.com/timwuhaotian/kiled/main/releases/Kiled-arm64.dmg)); the
 versions below are how we track releases, and match `Cargo.toml` and the app's Info.plist.
 
 ## Unreleased
+
+- **Updates download again.** GitHub's `github.com/<repo>/raw/<branch>/<file>` link answers
+  **504**, so the updater could not download a release (**Kiled can't update right now**),
+  and the README's download link was dead too. Every file Kiled fetches now comes from
+  `raw.githubusercontent.com`, which serves the same bytes, and a failure no longer says
+  `curl: curl:`. Because the broken link is in the updater itself, this release has to be
+  installed by hand once; later ones arrive on their own again.
 
 ## 0.0.7 — 2026-11-08
 

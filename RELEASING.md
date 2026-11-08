@@ -1,7 +1,7 @@
 # Releasing Kiled
 
 Maintainers build, sign and notarize releases locally; CI never builds them. Users always get
-one file, [`Kiled-arm64.dmg`](https://github.com/timwuhaotian/kiled/raw/main/releases/Kiled-arm64.dmg),
+one file, [`Kiled-arm64.dmg`](https://raw.githubusercontent.com/timwuhaotian/kiled/main/releases/Kiled-arm64.dmg),
 and never see a version number: versions are for us (`Cargo.toml`, Info.plist, `CHANGELOG.md`,
 commit messages). Installed copies read `releases/latest.toml` beside it to update themselves
 (DESIGN.md §13).
@@ -21,7 +21,7 @@ A release, in order. "Patch" means bumping the last number (0.0.4 → 0.0.5).
 3. **Changelog.** In `CHANGELOG.md`, put a `## x.y.z — YYYY-MM-DD` heading under
    `## Unreleased`, so the release takes its entries and `Unreleased` starts empty.
 4. **README.** It must describe what this release does: features, keys, config. Keep its
-   download link exactly `https://github.com/timwuhaotian/kiled/raw/main/releases/Kiled-arm64.dmg`
+   download link exactly `https://raw.githubusercontent.com/timwuhaotian/kiled/main/releases/Kiled-arm64.dmg`
    (step 5 refuses to start otherwise), and put no version number in it.
 5. **Build:** `scripts/release.sh`. It signs with Developer ID and the hardened runtime,
    notarizes and staples the app, then the DMG, checks both with `spctl`, and overwrites
@@ -43,7 +43,7 @@ A release, in order. "Patch" means bumping the last number (0.0.4 → 0.0.5).
 8. **Push** `main`, and check that CI passes and the download link serves the new DMG:
    ```sh
    git push origin main
-   curl -sIL https://github.com/timwuhaotian/kiled/raw/main/releases/Kiled-arm64.dmg | grep -i content-length
+   curl -sIL https://raw.githubusercontent.com/timwuhaotian/kiled/main/releases/Kiled-arm64.dmg | grep -i content-length
    ```
    The length matches `stat -f %z releases/Kiled-arm64.dmg`. Installed copies of Kiled find
    the release within six hours, or at their next launch, and install it when they quit.

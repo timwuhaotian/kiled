@@ -77,7 +77,7 @@ and 28 MB.</sub>
 
 ## Install
 
-Download [`Kiled-arm64.dmg`](https://github.com/timwuhaotian/kiled/raw/main/releases/Kiled-arm64.dmg),
+Download [`Kiled-arm64.dmg`](https://raw.githubusercontent.com/timwuhaotian/kiled/main/releases/Kiled-arm64.dmg),
 open it, and drag **Kiled** to **Applications**. The app is signed with a Developer ID and
 notarized by Apple. From then on it keeps itself up to date: a new release is installed when
 you quit Kiled, and **Kiled ▸ Check for Updates…** checks right away, in a small window that

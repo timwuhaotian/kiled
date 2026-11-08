@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Only the latest release, [`Kiled-arm64.dmg`](https://github.com/timwuhaotian/kiled/raw/main/releases/Kiled-arm64.dmg)
+Only the latest release, [`Kiled-arm64.dmg`](https://raw.githubusercontent.com/timwuhaotian/kiled/main/releases/Kiled-arm64.dmg)
 and `main`, gets security fixes.
 
 ## Reporting a vulnerability

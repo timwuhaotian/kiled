@@ -24,10 +24,13 @@ use crate::{
 
 actions!(update, [CheckForUpdates, RestartToUpdate]);
 
-/// Raw from `main`, where the release commit puts the DMG and this file together.
+/// Raw from `main`, where the release commit puts the DMG and this file together. The raw
+/// host serves them: `github.com/<repo>/raw/<branch>/<file>` answers 504 on GitHub's edge,
+/// so that route is never used.
 const MANIFEST_URL: &str =
     "https://raw.githubusercontent.com/timwuhaotian/kiled/main/releases/latest.toml";
-const DMG_URL: &str = "https://github.com/timwuhaotian/kiled/raw/main/releases/Kiled-arm64.dmg";
+const DMG_URL: &str =
+    "https://raw.githubusercontent.com/timwuhaotian/kiled/main/releases/Kiled-arm64.dmg";
 /// After launch, so the check never competes with reopening the session.
 const FIRST_CHECK: Duration = Duration::from_secs(5);
 /// An editor stays open for days; one wakeup in hours keeps idle CPU at zero (A13).
@@ -131,9 +134,12 @@ fn run(program: &str, args: &[&OsStr]) -> Result<String, String> {
 fn failure(program: &str, status: ExitStatus, stderr: &[u8]) -> String {
     let stderr = String::from_utf8_lossy(stderr);
     let name = Path::new(program).file_name().unwrap_or_default().display();
-    match stderr.trim() {
-        "" => format!("{name}: {status}"),
-        why => format!("{name}: {why}"),
+    let why = stderr.trim();
+    match why.strip_prefix(&format!("{name}: ")) {
+        // curl writes its own "curl: (56) …"; saying it twice helps nobody.
+        Some(_) => why.to_owned(),
+        None if why.is_empty() => format!("{name}: {status}"),
+        None => format!("{name}: {why}"),
     }
 }
 
@@ -623,6 +629,39 @@ mod tests {
                 is_newer("0.0.6.1", "0.0.5"),
             ],
             [true, true, false, false, false, false]
+        );
+    }
+
+    #[test]
+    fn the_release_urls_should_come_from_the_raw_host() {
+        // github.com/<repo>/raw/<branch>/<file> answers 504 on GitHub's edge, so every
+        // file Kiled fetches comes from raw.githubusercontent.com instead.
+        for url in [MANIFEST_URL, DMG_URL] {
+            assert!(
+                url.starts_with("https://raw.githubusercontent.com/"),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failure_should_not_name_the_program_twice() {
+        let status = Command::new("/usr/bin/false").status().unwrap();
+        assert_eq!(
+            failure(
+                "/usr/bin/curl",
+                status,
+                b"curl: (56) The requested URL returned error: 504\n",
+            ),
+            "curl: (56) The requested URL returned error: 504"
+        );
+        assert_eq!(
+            failure("/usr/bin/curl", status, b""),
+            "curl: exit status: 1"
+        );
+        assert_eq!(
+            failure("/usr/bin/codesign", status, b"bundle not signed\n"),
+            "codesign: bundle not signed"
         );
     }
 

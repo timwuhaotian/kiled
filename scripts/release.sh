@@ -40,7 +40,7 @@ notarize() {
 
 dmg="releases/Kiled-arm64.dmg"
 # README's download link must give this file, checked before the long build and notarization.
-link="https://github.com/timwuhaotian/kiled/raw/main/$dmg"
+link="https://raw.githubusercontent.com/timwuhaotian/kiled/main/$dmg"
 if ! grep -qF "($link)" README.md; then
   echo "README.md must link the release as $link" >&2
   exit 1
