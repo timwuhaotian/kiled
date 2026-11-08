@@ -6,6 +6,15 @@ versions below are how we track releases, and match `Cargo.toml` and the app's I
 
 ## Unreleased
 
+## 0.0.7 — 2026-11-08
+
+- **Drop files on the window to open them.** Files open as tabs and a folder becomes the
+  workspace's folder, as Finder's Open With does; unsaved changes are asked about first.
+- **Keyboard shortcuts can be changed again.** Recording a new shortcut in
+  **Settings ▸ Keyboard** swallowed the keypress and saved nothing, and
+  **Keyboard Shortcuts…** (⌘K ⌘S) wrote `keymap.toml` without ever opening it. Both work
+  now, and pressing fn on its own is no longer taken as a shortcut.
+
 ## 0.0.6 — 2026-11-08
 
 - **The explorer manages files now.** New File and New Folder (named in place in the tree;
