@@ -6,6 +6,8 @@ versions below are how we track releases, and match `Cargo.toml` and the app's I
 
 ## Unreleased
 
+## 0.0.9 — 2026-11-09
+
 - **Right-click menus.** A tab offers closing (this tab, others, to the right, saved,
   all), Copy Path and Reveal in Finder; an explorer file opens, copies its path and reveals
   in Finder, a folder also creates entries inside and expands or collapses, and both rename
