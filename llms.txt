@@ -1,0 +1,29 @@
+# Kiled
+
+> A native macOS code editor in Rust (13.5 MB installed): VS Code keys, tree-sitter highlighting, LSP; it edits code and nothing else.
+
+Kiled is the sibling of the [Kil](https://github.com/timwuhaotian/kil) terminal. No terminal, no extensions, no git panel. Built on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) (Metal rendering) and [tree-sitter](https://tree-sitter.github.io).
+
+## Core facts
+
+- Size: 4.8 MB download, 13.5 MB installed (one binary + icon, as Finder counts it). Same-method comparison (21 Oct 2026): Zed 269 MB, VS Code 920 MB, Cursor 1,039 MB.
+- Performance (measured, M4 Pro, release build): idle CPU 0.00% (0.83% with cursor blinking); keystroke 0.14–0.33 ms avg even in a 51,000-line file; first frame ~126 ms; ~111 MB RSS with one file open.
+- Languages: Rust, TypeScript, TSX, JavaScript, JSX, JSON/JSONC, YAML, TOML (tree-sitter, incremental, visible lines only); other files open as plain text.
+- LSP: rust-analyzer, TypeScript 7 `tsc --lsp` (project install first; `typescript-language-server` for TS ≤ 6), vscode-json-language-server, yaml-language-server, taplo. Diagnostics, completion, hover, go to definition (F12 / ⌘-click), Format Document (⇧⌥F).
+- Keys: VS Code macOS defaults (⌘P, ⇧⌘P, ⌘D, ⌥↑↓, ⌘/, F12, F8, ⇧⌥F, ⌘K ⌘W…), all rebindable in Settings ▸ Keyboard or `~/.config/kiled/keymap.toml`.
+- Platform: Apple silicon only, macOS 14+ (tested on macOS 27). No Intel, no App Store.
+- Install: download `Kiled-arm64.dmg` from `releases/`, drag to Applications. Signed with Developer ID, notarized by Apple.
+- Updates: checks 5 s after launch and every 6 h, verifies SHA-256 + version + Developer ID + notarization, installs on quit. `Kiled ▸ Check for Updates…` checks now.
+- License: MIT (GPUI is Apache-2.0; tree-sitter and grammars MIT).
+
+## Docs
+
+- [README](https://github.com/timwuhaotian/kiled#readme): features, install, language servers, keymap, config
+- [FAQ](https://github.com/timwuhaotian/kiled/blob/main/docs/faq.md): what it is, size, vs VS Code/Zed, install, updates, license
+- [DESIGN.md](https://github.com/timwuhaotian/kiled/blob/main/DESIGN.md): spec, acceptance criteria, measured budgets (§5.4), LSP and process rules
+- [CHANGELOG.md](https://github.com/timwuhaotian/kiled/blob/main/CHANGELOG.md): changes per release
+- [CONTRIBUTING.md](https://github.com/timwuhaotian/kiled/blob/main/CONTRIBUTING.md): checks and conventions
+- [RELEASING.md](https://github.com/timwuhaotian/kiled/blob/main/RELEASING.md): how releases are cut
+- [SECURITY.md](https://github.com/timwuhaotian/kiled/blob/main/SECURITY.md): reporting security issues
+- [Download (Kiled-arm64.dmg)](https://raw.githubusercontent.com/timwuhaotian/kiled/main/releases/Kiled-arm64.dmg): latest Apple silicon disk image + `.sha256`
+- [Kil (sibling terminal)](https://github.com/timwuhaotian/kil): the terminal Kiled shares its stack, themes and keymap design with

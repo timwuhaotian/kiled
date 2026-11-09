@@ -2,36 +2,51 @@
   <img src="docs/icon.png" width="128" height="128" alt="Kiled app icon">
 </p>
 
-<h1 align="center">Kiled</h1>
+<h1 align="center">Kiled — Lightweight macOS Code Editor</h1>
 
 [![CI](https://github.com/timwuhaotian/kiled/actions/workflows/ci.yml/badge.svg)](https://github.com/timwuhaotian/kiled/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![macOS 14+ · Apple silicon](https://img.shields.io/badge/macOS-14%2B%20%C2%B7%20Apple%20silicon-lightgrey)
 
-A native macOS code editor written in Rust (13.5MB), and the sibling of the
-[Kil](https://github.com/timwuhaotian/kil) terminal. It edits code and does nothing else: no
-terminal, no extensions, no git panel. It opens in a blink, uses no CPU while you think, and
-has VS Code's keys, so your fingers already know it.
+**Kiled is a lightweight macOS code editor written in Rust** (13.5 MB installed, 4.8 MB
+-download) and the sibling of the [Kil](https://github.com/timwuhaotian/kil) terminal. This
+native Rust code editor edits code and does nothing else: no terminal, no extensions, no git
+panel. It opens in a blink (~126 ms to first frame), uses no CPU while you think (0.00% idle),
+answers a keystroke in 0.28 ms — all [measured](DESIGN.md#54-budgets-measured) on an M4 Pro —
+and has VS Code's keys, so your fingers already know it.
 
 <p align="center">
   <img src="docs/screenshot.png" width="1000" alt="Kiled: the explorer, three tabs, TypeScript with two errors underlined">
 </p>
 
 Kiled is built on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) (Metal
-rendering, the same copy Kil uses) and [tree-sitter](https://tree-sitter.github.io), and talks
-to the language servers you already have.
+rendering, the same copy Kil uses) and [tree-sitter](https://tree-sitter.github.io), with LSP
+support through the language servers you already have: rust-analyzer, TypeScript 7, JSON, YAML
+and taplo.
 
 > **Status: early.** macOS only: Apple silicon, macOS 14 or later. It is tested on
 > macOS 27.
 
-## Size
+## Size: a 13.5 MB lightweight code editor
 
-Kiled is one binary and its icon: a 4.8 MB download, 13.5 MB installed. Beside the editors you
-might be using, measured the same way:
+Kiled is one binary and its icon: a 4.8 MB download, 13.5 MB installed — about 68× smaller
+than VS Code and 20× smaller than Zed. Beside the editors you might be using, measured the
+same way:
 
 <p align="center">
   <img src="docs/size.svg" width="800" alt="Installed size: Kiled 13.5 MB, TextMate 38.8 MB, BBEdit 68.8 MB, Sublime Text 146 MB, Nova 234 MB, Zed 269 MB, VS Code 920 MB, Cursor 1,039 MB">
 </p>
+
+| Editor | Installed size | Built with |
+|---|---|---|
+| **Kiled** | **13.5 MB** | Native Rust (GPUI, Metal) |
+| TextMate | 38.8 MB | Native macOS |
+| BBEdit | 68.8 MB | Native macOS |
+| Sublime Text | 146 MB | Native (C++) |
+| Nova | 234 MB | Native macOS |
+| Zed | 269 MB | Native Rust |
+| VS Code | 920 MB | Electron |
+| Cursor | 1,039 MB | Electron |
 
 <sub>The size of each installed app, as Finder counts it, from the latest Apple silicon download on
 its maker's site on 21 October 2026: Cursor 3.26.13, VS Code 1.143.0, Zed 1.24.4, Nova 14.1,
@@ -72,8 +87,9 @@ and 28 MB.</sub>
 - **Updates itself, quietly.** Kiled checks for a new release at launch and every six hours,
   downloads it in the background, checks its checksum, Developer ID signature and Apple
   notarization, and installs it when you quit.
-- **Idle means idle**: no CPU at rest, and a keystroke costs a fraction of a millisecond even
-  in a 50,000-line file.
+- **Fast, and idle means idle**: 0.00% CPU at rest, a keystroke in 0.28 ms even in a
+  50,000-line file, first frame in ~126 ms ([measured](DESIGN.md#54-budgets-measured) on an
+  M4 Pro).
 - **Kil's five themes** (Night, Paper, Fjord, Ember, Dusk): code is colored from the same
   palettes as a Kil pane.
 
@@ -232,6 +248,49 @@ cargo test -p kiled-core --test servers -- --ignored         # against installed
 Contributions are welcome: see [`CONTRIBUTING.md`](CONTRIBUTING.md) and the
 [code of conduct](CODE_OF_CONDUCT.md). Report security issues privately, as
 [`SECURITY.md`](SECURITY.md) describes. Changes are listed in [`CHANGELOG.md`](CHANGELOG.md).
+
+## FAQ
+
+**What is Kiled?**
+Kiled is a lightweight, native macOS code editor written in Rust. It edits code and nothing
+else — no terminal, no extensions, no git panel — with VS Code keybindings, tree-sitter
+highlighting and LSP support, in a 13.5 MB install.
+
+**How big is Kiled?**
+4.8 MB to download, 13.5 MB installed: one binary and its icon. That is about 68× smaller
+than VS Code (920 MB), 20× smaller than Zed (269 MB) and 11× smaller than Sublime Text
+(146 MB), each measured as Finder counts its installed app (see [Size](#size-a-135-mb-lightweight-code-editor)).
+
+**How is Kiled different from VS Code?**
+Kiled is a native Rust app, not Electron: ~68× smaller, ~126 ms to its first frame, 0% CPU
+when idle. The trade is scope — no extensions, terminal or git panel — while the keys stay
+VS Code's, so switching costs nothing.
+
+**How is Kiled different from Zed?**
+Both are native Rust editors, but Kiled is ~20× smaller (13.5 MB vs 269 MB) and deliberately
+does less: no collaboration, no AI assistant, no extensions. VS Code's keys are the defaults.
+
+**How is Kiled different from Sublime Text?**
+Kiled is ~11× smaller (13.5 MB vs 146 MB), free and MIT-licensed, with LSP diagnostics,
+completion, hover, go to definition and formatting built in rather than added through
+packages.
+
+**Which language servers does Kiled support?**
+rust-analyzer (Rust), TypeScript 7's own server (TypeScript/JavaScript, the project's install
+first), vscode-json-language-server (JSON), yaml-language-server (YAML) and taplo (TOML) —
+whichever you have installed. You get problems underlined as you type, completion, hover, go
+to definition and Format Document; a missing server shows how to install it.
+
+**Does Kiled use VS Code keybindings?**
+Yes. ⌘P, ⇧⌘P, ⌘D, ⌥↑↓, ⌘/, F12, F8, ⇧⌥F and the rest are the defaults, and every command can
+be rebound in Settings ▸ Keyboard or `~/.config/kiled/keymap.toml`.
+
+**What platforms does Kiled run on?**
+macOS 14 or later on Apple silicon only. No Intel, Windows or Linux builds, and no Mac App
+Store version.
+
+**Is Kiled free and open source?**
+Yes. Kiled is MIT-licensed; GPUI is Apache-2.0, tree-sitter and its grammars MIT.
 
 ## License
 
