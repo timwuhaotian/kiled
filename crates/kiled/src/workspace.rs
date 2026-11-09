@@ -1,6 +1,7 @@
 //! The window: the explorer sidebar, the open editors as tabs, the status bar, Quick Open,
 //! and every window-level action — opening, saving and closing files, switching editors,
-//! going back and forward (DESIGN.md §7).
+//! going back and forward (DESIGN.md §7). It also shows the right-click menus: a tab's,
+//! an explorer entry's and the editor's (DESIGN.md §7).
 //!
 //! Nothing unsaved is ever dropped without asking: closing an editor, opening another
 //! folder and quitting all ask first, and a file changed on disk since it was read is only
@@ -15,9 +16,10 @@ use std::{
 
 use gpui::{
     AnyElement, AnyView, AnyWindowHandle, App, AsyncWindowContext, ClickEvent, ClipboardItem,
-    Context, Entity, EntityId, ExternalPaths, FocusHandle, Focusable, Hsla, MouseButton,
-    PathPromptOptions, PromptLevel, SharedString, Stateful, StyleRefinement, Subscription, Task,
-    WeakEntity, Window, actions, div, prelude::*, px,
+    Context, Entity, EntityId, ExternalPaths, FocusHandle, Focusable, Hsla, KeyBinding,
+    MouseButton, MouseDownEvent, PathPromptOptions, Pixels, Point, PromptLevel, SharedString,
+    Stateful, StyleRefinement, Subscription, Task, WeakEntity, Window, actions, anchored, div,
+    prelude::*, px,
 };
 use kiled_core::files;
 
@@ -73,6 +75,7 @@ actions!(
         ZoomIn,
         ZoomOut,
         ResetZoom,
+        DismissContextMenu,
     ]
 );
 
@@ -90,6 +93,85 @@ const PROJECT_FILE_LIMIT: usize = 200_000;
 const RESCAN_INTERVAL: Duration = Duration::from_secs(10);
 /// Files opened lately that Quick Open lists first.
 const RECENT_LIMIT: usize = 30;
+
+/// The menu's width; rows are 24 px tall with 1 px of padding around the box.
+const MENU_WIDTH: f32 = 220.;
+const MENU_ROW_HEIGHT: f32 = 24.;
+
+/// The right-click menu's keys; fixed, and live only while it is open.
+pub fn bindings() -> Vec<KeyBinding> {
+    vec![KeyBinding::new(
+        "escape",
+        DismissContextMenu,
+        Some("ContextMenu"),
+    )]
+}
+
+/// One row of a context menu.
+enum MenuItem {
+    /// An action; a click runs it (when enabled) and closes the menu.
+    Action {
+        label: &'static str,
+        enabled: bool,
+        action: MenuAction,
+    },
+    /// A grey rule between groups.
+    Separator,
+}
+
+/// What a context-menu row does.
+#[derive(Clone)]
+enum MenuAction {
+    /// Tab actions; each names the tab the menu was opened on.
+    CloseTab(usize),
+    CloseOtherTabs(usize),
+    CloseTabsToRight(usize),
+    CloseSavedTabs(usize),
+    CloseAllTabs,
+    /// File actions; the path the menu was opened on.
+    CopyPath(PathBuf),
+    CopyRelativePath(PathBuf),
+    RevealInFinder(PathBuf),
+    OpenFile(PathBuf),
+    NewFileIn(PathBuf),
+    NewFolderIn(PathBuf),
+    ToggleFolder(PathBuf),
+    Rename(PathBuf),
+    Trash(PathBuf),
+    /// Editor actions, run on the focused editor.
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+/// An open right-click menu: where it is, and what it offers.
+struct ContextMenu {
+    position: Point<Pixels>,
+    items: Vec<MenuItem>,
+}
+
+/// The menu's colors, copied out of the theme so the rows can be built freely.
+#[derive(Clone, Copy)]
+struct MenuColors {
+    bg: Hsla,
+    border: Hsla,
+    text: Hsla,
+    muted: Hsla,
+    selected: Hsla,
+}
+
+impl MenuColors {
+    fn of(theme: &Theme) -> Self {
+        Self {
+            bg: theme.popover_bg,
+            border: theme.divider,
+            text: theme.chrome_text,
+            muted: theme.muted,
+            selected: theme.selected,
+        }
+    }
+}
 
 /// What a launch opens.
 #[derive(Clone, Debug, Default)]
@@ -199,6 +281,12 @@ pub struct Workspace {
     drawn: bool,
     editor_subscriptions: HashMap<EntityId, Subscription>,
     _subscriptions: Vec<Subscription>,
+    /// The open right-click menu, if any.
+    context_menu: Option<ContextMenu>,
+    /// The menu takes focus while it is open, so Escape closes it.
+    context_menu_focus: FocusHandle,
+    /// What had focus before the menu opened, to give it back on close.
+    context_menu_prev_focus: Option<FocusHandle>,
 }
 
 impl Focusable for Workspace {
@@ -245,27 +333,7 @@ impl Workspace {
                 this.notices.push(message.clone());
                 cx.notify();
             }),
-            cx.subscribe_in(
-                &tree,
-                window,
-                |this, _, event: &TreeEvent, window, cx| match event {
-                    TreeEvent::Open(path) => {
-                        this.open_path(path, true, window, cx);
-                    }
-                    TreeEvent::Dismiss => this.focus_editor(window, cx),
-                    TreeEvent::Create { dir, name, is_dir } => {
-                        this.create_entry(dir, name, *is_dir, window, cx);
-                    }
-                    TreeEvent::Rename { from, name } => {
-                        this.rename_entry(from, name, cx);
-                    }
-                    TreeEvent::Trash(path) => this.trash_entry(path.clone(), window, cx),
-                    TreeEvent::Notice(message) => {
-                        this.notices.push(message.clone().into());
-                        cx.notify();
-                    }
-                },
-            ),
+            cx.subscribe_in(&tree, window, Self::on_tree_event),
         ];
         let mut this = Self {
             focus_handle: cx.focus_handle(),
@@ -296,6 +364,9 @@ impl Workspace {
             drawn: false,
             editor_subscriptions: HashMap::new(),
             _subscriptions: subscriptions,
+            context_menu: None,
+            context_menu_focus: cx.focus_handle(),
+            context_menu_prev_focus: None,
         };
         if let Some(folder) = launch.folder {
             this.set_folder(Some(folder), cx);
@@ -619,6 +690,39 @@ impl Workspace {
         self.active.and_then(|index| self.editors.get(index))
     }
 
+    fn on_tree_event(
+        &mut self,
+        _: &Entity<FileTree>,
+        event: &TreeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            TreeEvent::Open(path) => {
+                self.open_path(path, true, window, cx);
+            }
+            TreeEvent::Dismiss => self.focus_editor(window, cx),
+            TreeEvent::Create { dir, name, is_dir } => {
+                self.create_entry(dir, name, *is_dir, window, cx);
+            }
+            TreeEvent::Rename { from, name } => {
+                self.rename_entry(from, name, cx);
+            }
+            TreeEvent::Trash(path) => self.trash_entry(path.clone(), window, cx),
+            TreeEvent::ContextMenu {
+                path,
+                is_dir,
+                position,
+            } => {
+                self.show_tree_menu(path.clone(), *is_dir, *position, window, cx);
+            }
+            TreeEvent::Notice(message) => {
+                self.notices.push(message.clone().into());
+                cx.notify();
+            }
+        }
+    }
+
     fn on_editor_event(
         &mut self,
         editor: &Entity<Editor>,
@@ -645,6 +749,9 @@ impl Workspace {
                     });
                     self.forward.clear();
                 }
+            }
+            EditorEvent::ContextMenu { position } => {
+                self.show_editor_menu(*position, window, cx);
             }
         }
     }
@@ -929,10 +1036,14 @@ impl Workspace {
         else {
             return;
         };
+        Self::reveal_in_finder_of(&path);
+    }
+
+    fn reveal_in_finder_of(path: &Path) {
         // `open -R` selects the file in a Finder window; it is fire-and-forget.
         if let Err(err) = std::process::Command::new("/usr/bin/open")
             .arg("-R")
-            .arg(&path)
+            .arg(path)
             .spawn()
         {
             log::error!("revealing {} in Finder: {err}", path.display());
@@ -946,6 +1057,10 @@ impl Workspace {
         else {
             return;
         };
+        self.copy_path_of(&path, relative, cx);
+    }
+
+    fn copy_path_of(&mut self, path: &Path, relative: bool, cx: &mut Context<Self>) {
         let text = match (&self.folder, relative) {
             (Some(folder), true) => path.strip_prefix(folder).map_or_else(
                 |_| path.display().to_string(),
@@ -954,6 +1069,262 @@ impl Workspace {
             _ => path.display().to_string(),
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    // ── context menu ────────────────────────────────────────────────────────────────
+
+    /// Opens the right-click menu at `position`, taking focus so Escape closes it.
+    fn show_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        items: Vec<MenuItem>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.context_menu_prev_focus = window.focused(cx);
+        self.context_menu = Some(ContextMenu { position, items });
+        window.focus(&self.context_menu_focus);
+        cx.notify();
+    }
+
+    /// Closes the menu and gives the focus back to whatever had it before.
+    fn hide_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.context_menu.take().is_some()
+            && let Some(prev) = self.context_menu_prev_focus.take()
+        {
+            window.focus(&prev);
+        }
+        cx.notify();
+    }
+
+    /// The tab menu: close (others, to the right, saved, all), then the file's path.
+    fn show_tab_menu(
+        &mut self,
+        index: usize,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.editors.get(index) else {
+            return;
+        };
+        let path = editor.read(cx).path().map(Path::to_owned);
+        let count = self.editors.len();
+        let in_folder = path.as_ref().is_some_and(|path| {
+            self.folder
+                .as_ref()
+                .is_some_and(|folder| path.starts_with(folder))
+        });
+        let item = |label, enabled, action| MenuItem::Action {
+            label,
+            enabled,
+            action,
+        };
+        let items = vec![
+            item("Close", true, MenuAction::CloseTab(index)),
+            item("Close Others", count > 1, MenuAction::CloseOtherTabs(index)),
+            item(
+                "Close to the Right",
+                index + 1 < count,
+                MenuAction::CloseTabsToRight(index),
+            ),
+            item(
+                "Close Saved",
+                self.editors
+                    .iter()
+                    .any(|editor| !editor.read(cx).is_dirty()),
+                MenuAction::CloseSavedTabs(index),
+            ),
+            item(
+                "Close All",
+                !self.editors.is_empty(),
+                MenuAction::CloseAllTabs,
+            ),
+            MenuItem::Separator,
+            item(
+                "Copy Path",
+                path.is_some(),
+                MenuAction::CopyPath(path.clone().unwrap_or_default()),
+            ),
+            item(
+                "Copy Relative Path",
+                in_folder,
+                MenuAction::CopyRelativePath(path.clone().unwrap_or_default()),
+            ),
+            item(
+                "Reveal in Finder",
+                path.is_some(),
+                MenuAction::RevealInFinder(path.unwrap_or_default()),
+            ),
+        ];
+        self.show_context_menu(position, items, window, cx);
+    }
+
+    /// The explorer menu: files open and reveal; folders create inside and expand.
+    fn show_tree_menu(
+        &mut self,
+        path: PathBuf,
+        is_dir: bool,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let in_folder = self
+            .folder
+            .as_ref()
+            .is_some_and(|folder| path.starts_with(folder));
+        let item = |label, enabled, action| MenuItem::Action {
+            label,
+            enabled,
+            action,
+        };
+        let mut items: Vec<MenuItem> = Vec::new();
+        if is_dir {
+            items.extend([
+                item("New File…", true, MenuAction::NewFileIn(path.clone())),
+                item("New Folder…", true, MenuAction::NewFolderIn(path.clone())),
+                MenuItem::Separator,
+            ]);
+            let expanded = self.tree.read(cx).is_expanded(&path);
+            items.push(item(
+                if expanded { "Collapse" } else { "Expand" },
+                true,
+                MenuAction::ToggleFolder(path.clone()),
+            ));
+            items.push(MenuItem::Separator);
+        } else {
+            items.push(item("Open", true, MenuAction::OpenFile(path.clone())));
+            items.push(MenuItem::Separator);
+        }
+        items.extend([
+            item("Copy Path", true, MenuAction::CopyPath(path.clone())),
+            item(
+                "Copy Relative Path",
+                in_folder,
+                MenuAction::CopyRelativePath(path.clone()),
+            ),
+            item(
+                "Reveal in Finder",
+                true,
+                MenuAction::RevealInFinder(path.clone()),
+            ),
+            MenuItem::Separator,
+            item("Rename", true, MenuAction::Rename(path.clone())),
+            item("Move to Trash", true, MenuAction::Trash(path)),
+        ]);
+        self.show_context_menu(position, items, window, cx);
+    }
+
+    /// The editor menu: the clipboard actions, run on the focused editor.
+    fn show_editor_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let item = |label, enabled, action| MenuItem::Action {
+            label,
+            enabled,
+            action,
+        };
+        let items = vec![
+            item("Cut", true, MenuAction::Cut),
+            item("Copy", true, MenuAction::Copy),
+            item("Paste", true, MenuAction::Paste),
+            MenuItem::Separator,
+            item("Select All", true, MenuAction::SelectAll),
+        ];
+        self.show_context_menu(position, items, window, cx);
+    }
+
+    fn run_menu_action(&mut self, action: MenuAction, window: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            MenuAction::CloseTab(index) => self.close_editor_at(index, window, cx),
+            MenuAction::CloseOtherTabs(index) => self.close_other_editors_from(index, window, cx),
+            MenuAction::CloseTabsToRight(index) => {
+                self.close_editors_to_right_from(index, window, cx);
+            }
+            MenuAction::CloseSavedTabs(index) => {
+                self.close_saved_editors_keeping(index, window, cx);
+            }
+            MenuAction::CloseAllTabs => {
+                let editors = self.editors.clone();
+                self.confirm_unsaved(editors, window, cx, Workspace::remove_all);
+            }
+            MenuAction::CopyPath(path) => self.copy_path_of(&path, false, cx),
+            MenuAction::CopyRelativePath(path) => self.copy_path_of(&path, true, cx),
+            MenuAction::RevealInFinder(path) => Self::reveal_in_finder_of(&path),
+            MenuAction::OpenFile(path) => {
+                self.open_path(&path, true, window, cx);
+            }
+            MenuAction::NewFileIn(dir) => self.tree.update(cx, |tree, cx| {
+                tree.begin_create_in(&dir, false, window, cx);
+            }),
+            MenuAction::NewFolderIn(dir) => self.tree.update(cx, |tree, cx| {
+                tree.begin_create_in(&dir, true, window, cx);
+            }),
+            MenuAction::ToggleFolder(path) => self.tree.update(cx, |tree, cx| {
+                tree.toggle_expanded(&path, cx);
+            }),
+            MenuAction::Rename(path) => self.tree.update(cx, |tree, cx| {
+                tree.begin_rename_at(&path, window, cx);
+            }),
+            MenuAction::Trash(path) => self.trash_entry(path, window, cx),
+            MenuAction::Cut => window.dispatch_action(Box::new(crate::editor::Cut), cx),
+            MenuAction::Copy => window.dispatch_action(Box::new(crate::editor::Copy), cx),
+            MenuAction::Paste => window.dispatch_action(Box::new(crate::editor::Paste), cx),
+            MenuAction::SelectAll => {
+                window.dispatch_action(Box::new(crate::editor::SelectAll), cx);
+            }
+        }
+    }
+
+    /// Closes every editor but `index` (the tab the menu was opened on), asking first.
+    fn close_other_editors_from(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(keep) = self.editors.get(index).map(Entity::entity_id) else {
+            return;
+        };
+        let targets: Vec<Entity<Editor>> = self
+            .editors
+            .iter()
+            .filter(|editor| editor.entity_id() != keep)
+            .cloned()
+            .collect();
+        self.close_editors(targets, Some(keep), window, cx);
+    }
+
+    /// Closes the editors to `index`'s right, keeping the clicked tab in front.
+    fn close_editors_to_right_from(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let keep = self.editors.get(index).map(Entity::entity_id);
+        let targets: Vec<Entity<Editor>> = self.editors.iter().skip(index + 1).cloned().collect();
+        self.close_editors(targets, keep, window, cx);
+    }
+
+    /// Closes every saved editor; the clicked tab stays in front if it survives it.
+    fn close_saved_editors_keeping(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let keep = self.editors.get(index).map(Entity::entity_id);
+        let targets: Vec<Entity<Editor>> = self
+            .editors
+            .iter()
+            .filter(|editor| !editor.read(cx).is_dirty())
+            .cloned()
+            .collect();
+        self.close_editors(targets, keep, window, cx);
     }
 
     /// Puts the file in front back as it is on disk, as one undoable step.
@@ -1602,6 +1973,9 @@ fn bind_actions(root: Stateful<gpui::Div>, cx: &mut Context<Workspace>) -> State
             let base = this.base_font_size;
             this.set_font_size(|_| base, cx);
         }))
+        .on_action(cx.listener(|this, _: &DismissContextMenu, window, cx| {
+            this.hide_context_menu(window, cx);
+        }))
         .on_action(cx.listener(|this, _: &crate::Quit, window, cx| this.quit(false, window, cx)));
     bind_open_editor(root, cx)
 }
@@ -1784,6 +2158,15 @@ impl Workspace {
                     this.close_editor_at(index, window, cx);
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    // Keeps the menu's focus: without it, the window's own focusable
+                    // element takes focus back after this handler runs.
+                    window.prevent_default();
+                    this.show_tab_menu(index, event.position, window, cx);
+                }),
+            )
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.activate(index, window, cx);
             }))
@@ -1942,6 +2325,33 @@ impl Workspace {
             )
     }
 
+    /// The open right-click menu over a full-window layer: a click outside the menu
+    /// closes it, and while it is open the layer owns the keys, so Escape closes it too.
+    fn render_context_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.context_menu.as_ref()?;
+        Some(
+            div()
+                .id("context-menu-layer")
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .key_context("ContextMenu")
+                .track_focus(&self.context_menu_focus)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| this.hide_context_menu(window, cx)),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(|this, _, window, cx| this.hide_context_menu(window, cx)),
+                )
+                .child(context_menu_popover(menu, cx))
+                .into_any_element(),
+        )
+    }
+
     fn render_empty(chrome: Chrome) -> impl IntoElement {
         let (table, _) = keymap::resolve(config::read_keymap().ok().flatten().as_deref());
         let row = |command: Command| {
@@ -2045,6 +2455,69 @@ fn title_strip(id: &'static str) -> Stateful<gpui::Div> {
             window.titlebar_double_click();
         }
     })
+}
+
+/// Draws the open context menu at its position, above everything else in the window.
+fn context_menu_popover(menu: &ContextMenu, cx: &mut Context<Workspace>) -> AnyElement {
+    let colors = MenuColors::of(cx.global::<Theme>());
+    let body = div()
+        .id("context-menu")
+        .debug_selector(|| "context-menu".to_owned())
+        .w(px(MENU_WIDTH))
+        .p_1()
+        .rounded_md()
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.bg)
+        .shadow_lg()
+        .text_size(px(12.5))
+        // Clicks land on the rows, not on the dismiss layer behind the menu.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .children(
+            menu.items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| match item {
+                    MenuItem::Separator => {
+                        div().h(px(1.)).my_1().bg(colors.border).into_any_element()
+                    }
+                    MenuItem::Action {
+                        label,
+                        enabled,
+                        action,
+                    } => {
+                        let action = action.clone();
+                        let enabled = *enabled;
+                        div()
+                            .id(("context-menu-item", index))
+                            .debug_selector(move || format!("context-menu-item-{index}"))
+                            .h(px(MENU_ROW_HEIGHT))
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .rounded_sm()
+                            .text_color(if enabled { colors.text } else { colors.muted })
+                            .when(enabled, |row| {
+                                row.cursor_pointer()
+                                    .hover(|style| style.bg(colors.selected))
+                            })
+                            .child(*label)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.hide_context_menu(window, cx);
+                                if enabled {
+                                    this.run_menu_action(action.clone(), window, cx);
+                                }
+                            }))
+                            .into_any_element()
+                    }
+                }),
+        );
+    anchored()
+        .position(menu.position)
+        .child(body)
+        .into_any_element()
 }
 
 impl Workspace {
@@ -2162,6 +2635,7 @@ impl Render for Workspace {
             )
             .children(picker)
             .children(notices)
+            .children(self.render_context_menu(cx))
     }
 }
 
@@ -2193,6 +2667,7 @@ mod tests {
             cx.bind_keys(crate::text_field::bindings());
             cx.bind_keys(crate::picker::bindings());
             cx.bind_keys(crate::file_tree::bindings());
+            cx.bind_keys(bindings());
         });
         let (workspace, cx) =
             cx.add_window_view(|window, cx| Workspace::new(launch, None, Vec::new(), window, cx));
@@ -2759,5 +3234,148 @@ mod tests {
             (open_paths(&workspace, cx), dirty),
             (vec![dir.join("notes.txt")], Some(true))
         );
+    }
+
+    #[gpui::test]
+    fn a_right_click_on_a_tab_should_copy_its_path(cx: &mut TestAppContext) {
+        let dir = scratch("tab-menu");
+        let (workspace, cx) = workspace(
+            Launch {
+                files: vec![SavedFile {
+                    path: dir.join("notes.txt"),
+                    line: 1,
+                    column: 1,
+                }],
+                ..Launch::default()
+            },
+            cx,
+        );
+        let tab = gpui::point(px(TRAFFIC_LIGHTS + 20.), px(TOP_BAR / 2.));
+        cx.simulate_mouse_down(tab, MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_up(tab, MouseButton::Right, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("context-menu").is_some());
+        // Close(0), Close Others(1), Close to the Right(2), Close Saved(3), Close All(4),
+        // separator(5), Copy Path(6), Copy Relative Path(7), Reveal in Finder(8).
+        let copy_path = cx.debug_bounds("context-menu-item-6").unwrap();
+        cx.simulate_click(copy_path.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        let closed = workspace.read_with(cx, |this, _| this.context_menu.is_none());
+        assert!(closed);
+        let copied = cx.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(
+            copied.as_deref(),
+            Some(dir.join("notes.txt").to_str().unwrap())
+        );
+    }
+
+    #[gpui::test]
+    fn a_right_click_on_a_tree_file_should_copy_its_path(cx: &mut TestAppContext) {
+        let dir = scratch("tree-menu");
+        let (_, cx) = workspace(
+            Launch {
+                folder: Some(dir.clone()),
+                sidebar: true,
+                ..Launch::default()
+            },
+            cx,
+        );
+        // The second row is notes.txt; the first is the src folder.
+        let row = cx.debug_bounds("tree-row-1").expect("notes.txt row");
+        let point = gpui::point(row.center().x, row.center().y);
+        cx.simulate_mouse_down(point, MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_up(point, MouseButton::Right, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("context-menu").is_some());
+        // Open(0), separator(1), Copy Path(2), Copy Relative Path(3), Reveal in Finder(4),
+        // separator(5), Rename(6), Move to Trash(7).
+        let copy_path = cx.debug_bounds("context-menu-item-2").unwrap();
+        cx.simulate_click(copy_path.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        let copied = cx.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(
+            copied.as_deref(),
+            Some(dir.join("notes.txt").to_str().unwrap())
+        );
+    }
+
+    #[gpui::test]
+    fn a_right_click_on_a_tree_folder_should_start_a_new_file(cx: &mut TestAppContext) {
+        let dir = scratch("tree-menu-create");
+        let (_, cx) = workspace(
+            Launch {
+                folder: Some(dir.clone()),
+                sidebar: true,
+                ..Launch::default()
+            },
+            cx,
+        );
+        let row = cx.debug_bounds("tree-row-0").expect("src folder row");
+        let point = gpui::point(row.center().x, row.center().y);
+        cx.simulate_mouse_down(point, MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_up(point, MouseButton::Right, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("context-menu").is_some());
+        // New File…(0) is the first item.
+        let new_file = cx.debug_bounds("context-menu-item-0").unwrap();
+        cx.simulate_click(new_file.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        cx.simulate_input("created.rs");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(dir.join("src/created.rs").exists());
+    }
+
+    #[gpui::test]
+    fn a_right_click_in_the_editor_should_copy_the_line(cx: &mut TestAppContext) {
+        let dir = scratch("editor-menu");
+        let (_, cx) = workspace(
+            Launch {
+                folder: Some(dir.clone()),
+                files: vec![SavedFile {
+                    path: dir.join("src/main.rs"),
+                    line: 1,
+                    column: 1,
+                }],
+                ..Launch::default()
+            },
+            cx,
+        );
+        let point = gpui::point(px(400.), px(200.));
+        cx.simulate_mouse_down(point, MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_up(point, MouseButton::Right, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("context-menu").is_some());
+        // Cut(0), Copy(1), Paste(2), separator(3), Select All(4).
+        let copy = cx.debug_bounds("context-menu-item-1").unwrap();
+        cx.simulate_click(copy.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        let copied = cx.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(copied.as_deref(), Some("fn main() {}\n"));
+    }
+
+    #[gpui::test]
+    fn the_context_menu_should_close_on_escape(cx: &mut TestAppContext) {
+        let dir = scratch("menu-escape");
+        let (workspace, cx) = workspace(
+            Launch {
+                files: vec![SavedFile {
+                    path: dir.join("notes.txt"),
+                    line: 1,
+                    column: 1,
+                }],
+                ..Launch::default()
+            },
+            cx,
+        );
+        let tab = gpui::point(px(TRAFFIC_LIGHTS + 20.), px(TOP_BAR / 2.));
+        cx.simulate_mouse_down(tab, MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_up(tab, MouseButton::Right, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("context-menu").is_some());
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        let closed = workspace.read_with(cx, |this, _| this.context_menu.is_none());
+        assert!(closed);
     }
 }

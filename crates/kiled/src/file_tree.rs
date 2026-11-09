@@ -8,8 +8,8 @@ use std::{
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
-    KeyBinding, ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, Window,
-    actions, div, prelude::*, px, uniform_list,
+    KeyBinding, MouseButton, MouseDownEvent, Pixels, Point, ScrollStrategy, SharedString, Stateful,
+    Subscription, UniformListScrollHandle, Window, actions, div, prelude::*, px, uniform_list,
 };
 use kiled_core::files::{self, Entry};
 
@@ -74,6 +74,12 @@ pub enum TreeEvent {
     Rename { from: PathBuf, name: String },
     /// An entry should move to the Trash; the workspace asks and closes its editors.
     Trash(PathBuf),
+    /// The user right-clicked an entry; the workspace shows its menu here.
+    ContextMenu {
+        path: PathBuf,
+        is_dir: bool,
+        position: Point<Pixels>,
+    },
     /// A message for the user (a name that was refused).
     Notice(String),
 }
@@ -305,7 +311,6 @@ impl FileTree {
     /// New File / New Folder: the entry is named in the folder the selection points at —
     /// a selected folder, a selected file's folder, or the root.
     fn begin_create(&mut self, is_dir: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.cancel_editing();
         let Some(root) = self.root.clone() else {
             return;
         };
@@ -317,8 +322,28 @@ impl FileTree {
                 .map_or_else(|| root.clone(), Path::to_owned),
             None => root,
         };
-        self.expanded.insert(dir.clone());
-        let field = self.make_field("", InlineKind::Create { dir, is_dir }, window, cx);
+        self.begin_create_in(&dir, is_dir, window, cx);
+    }
+
+    /// Begins naming a new file or folder in `dir`: the context menu's New File/Folder.
+    pub fn begin_create_in(
+        &mut self,
+        dir: &Path,
+        is_dir: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cancel_editing();
+        self.expanded.insert(dir.to_owned());
+        let field = self.make_field(
+            "",
+            InlineKind::Create {
+                dir: dir.to_owned(),
+                is_dir,
+            },
+            window,
+            cx,
+        );
         self.show_editing(&field, window, cx);
     }
 
@@ -334,9 +359,41 @@ impl FileTree {
         else {
             return;
         };
+        self.begin_rename_at(&row.path, window, cx);
+    }
+
+    /// Begins renaming the entry at `path`: the context menu's Rename.
+    pub fn begin_rename_at(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            return;
+        }
+        let Some(row) = self.rows.iter().find(|row| row.path == path) else {
+            return;
+        };
         let name = row.name.to_string();
-        let field = self.make_field(&name, InlineKind::Rename { from: row.path }, window, cx);
+        let field = self.make_field(
+            &name,
+            InlineKind::Rename {
+                from: path.to_owned(),
+            },
+            window,
+            cx,
+        );
         self.show_editing(&field, window, cx);
+    }
+
+    /// Whether `path` (a folder) is expanded in the tree.
+    pub fn is_expanded(&self, path: &Path) -> bool {
+        self.expanded.contains(path)
+    }
+
+    /// Expands a collapsed folder or collapses an expanded one: the context menu's toggle.
+    pub fn toggle_expanded(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if !self.expanded.remove(path) {
+            self.expanded.insert(path.to_owned());
+        }
+        self.rebuild();
+        cx.notify();
     }
 
     fn field_event(
@@ -570,6 +627,74 @@ fn toolbar_button(
         .child(label)
 }
 
+/// One row: indent, expand mark, name (or the field naming it). A left-click opens it,
+/// a right-click selects it and asks the workspace for its menu.
+fn tree_row(
+    index: usize,
+    row: &Row,
+    field: Option<Entity<TextField>>,
+    tree: Entity<FileTree>,
+    selected: bool,
+    is_active: bool,
+    colors: Colors,
+) -> Stateful<gpui::Div> {
+    let row_path = row.path.clone();
+    let row_is_dir = row.is_dir;
+    let click_tree = tree.clone();
+    #[expect(clippy::cast_precision_loss, reason = "folder depth")]
+    let indent = px(8. + INDENT * row.depth as f32);
+    div()
+        .id(index)
+        .debug_selector(move || format!("tree-row-{index}"))
+        .w_full()
+        .h(px(ROW_HEIGHT))
+        .pl(indent)
+        .pr_2()
+        .flex()
+        .items_center()
+        .gap_1()
+        .rounded_md()
+        .cursor_pointer()
+        .text_color(colors.text)
+        .when(is_active, |row| row.bg(colors.selected))
+        .when(selected, |row| row.border_1().border_color(colors.accent))
+        .hover(|style| style.bg(colors.hover))
+        .child(
+            div()
+                .w(px(12.))
+                .flex_none()
+                .text_size(px(10.))
+                .text_color(colors.muted)
+                .child(match (row.editing, row.is_dir, row.expanded) {
+                    (false, true, true) => "▾",
+                    (false, true, false) => "▸",
+                    _ => "",
+                }),
+        )
+        .child(row_label(row, field, colors))
+        .on_mouse_down(
+            MouseButton::Right,
+            move |event: &MouseDownEvent, window, cx| {
+                let position = event.position;
+                // Keeps the menu's focus: without it, the tree takes focus
+                // back after this handler runs.
+                window.prevent_default();
+                tree.update(cx, |tree, cx| {
+                    tree.selected = Some(index);
+                    cx.notify();
+                    cx.emit(TreeEvent::ContextMenu {
+                        path: row_path.clone(),
+                        is_dir: row_is_dir,
+                        position,
+                    });
+                });
+            },
+        )
+        .on_click(move |_: &ClickEvent, _, cx| {
+            click_tree.update(cx, |tree, cx| tree.activate(index, cx));
+        })
+}
+
 /// A row's name, or the field it is being (re)named in.
 fn row_label(row: &Row, field: Option<Entity<TextField>>, colors: Colors) -> AnyElement {
     match (row.editing, field) {
@@ -609,44 +734,15 @@ impl Render for FileTree {
             range
                 .map(|index| {
                     let row = &rows[index];
-                    let is_active = !row.editing && active.as_ref() == Some(&row.path);
-                    let field = editing_field.clone();
-                    let tree = tree.clone();
-                    #[expect(clippy::cast_precision_loss, reason = "folder depth")]
-                    let indent = px(8. + INDENT * row.depth as f32);
-                    div()
-                        .id(index)
-                        .w_full()
-                        .h(px(ROW_HEIGHT))
-                        .pl(indent)
-                        .pr_2()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .text_color(colors.text)
-                        .when(is_active, |row| row.bg(colors.selected))
-                        .when(focused && selected == Some(index), |row| {
-                            row.border_1().border_color(colors.accent)
-                        })
-                        .hover(|style| style.bg(colors.hover))
-                        .child(
-                            div()
-                                .w(px(12.))
-                                .flex_none()
-                                .text_size(px(10.))
-                                .text_color(colors.muted)
-                                .child(match (row.editing, row.is_dir, row.expanded) {
-                                    (false, true, true) => "▾",
-                                    (false, true, false) => "▸",
-                                    _ => "",
-                                }),
-                        )
-                        .child(row_label(row, field, colors))
-                        .on_click(move |_: &ClickEvent, _, cx| {
-                            tree.update(cx, |tree, cx| tree.activate(index, cx));
-                        })
+                    tree_row(
+                        index,
+                        row,
+                        editing_field.clone(),
+                        tree.clone(),
+                        focused && selected == Some(index),
+                        !row.editing && active.as_ref() == Some(&row.path),
+                        colors,
+                    )
                 })
                 .collect()
         })
@@ -725,6 +821,35 @@ mod tests {
                 ]
             )
         );
+    }
+
+    #[gpui::test]
+    fn a_right_click_on_a_row_should_offer_its_menu(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("kiled-tree-menu-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/main.rs"), "fn main() {}\n").unwrap();
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            cx.bind_keys(bindings());
+        });
+        let (tree, cx) = cx.add_window_view(|_, cx| FileTree::new(cx));
+        tree.update_in(cx, |tree, window, cx| {
+            tree.set_root(Some(dir), cx);
+            window.focus(&tree.focus_handle);
+        });
+        cx.run_until_parked();
+        let mut events = cx.events::<TreeEvent, _>(&tree);
+        let row = cx.debug_bounds("tree-row-0").expect("first row");
+        let point = gpui::point(row.center().x, row.center().y);
+        cx.simulate_mouse_down(point, MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_up(point, MouseButton::Right, gpui::Modifiers::none());
+        cx.run_until_parked();
+        let event = events.try_recv().expect("a context menu event");
+        match event {
+            TreeEvent::ContextMenu { is_dir, .. } => assert!(is_dir),
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[gpui::test]

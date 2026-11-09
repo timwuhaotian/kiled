@@ -6,6 +6,12 @@ versions below are how we track releases, and match `Cargo.toml` and the app's I
 
 ## Unreleased
 
+- **Right-click menus.** A tab offers closing (this tab, others, to the right, saved,
+  all), Copy Path and Reveal in Finder; an explorer file opens, copies its path and reveals
+  in Finder, a folder also creates entries inside and expands or collapses, and both rename
+  and move to the Trash; the editor offers Cut, Copy, Paste and Select All. A click elsewhere
+  or Escape closes the menu.
+
 ## 0.0.8 — 2026-11-09
 
 - **Editing acts like VS Code in more corners.** Tab with a selection indents the

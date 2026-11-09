@@ -59,7 +59,9 @@ and 28 MB.</sub>
   at once), F2 to rename, ⌘⌫ to move to the Trash. Renames take their open tabs with them,
   nothing on disk is ever overwritten, and a file with unsaved changes can't be trashed
   until it is saved or closed. Reveal in Finder, Copy Path and Copy Relative Path are in
-  the File menu and the palette.
+  the File menu and the palette. Right-clicking a tab, an explorer entry or the editor
+  opens its menu: closing tabs, copying paths, revealing in Finder, creating, renaming
+  and trashing entries, and Cut, Copy, Paste and Select All.
 - **Nothing unsaved is lost.** Closing a tab, opening another folder and quitting ask first.
   A file changed on disk reloads if you hadn't touched it, and saving over someone else's
   change asks, offering to reload instead. **Revert File** puts a file back as it is on disk,

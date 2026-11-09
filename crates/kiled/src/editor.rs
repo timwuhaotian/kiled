@@ -153,6 +153,8 @@ pub enum EditorEvent {
     },
     /// The cursor jumped from `offset` (a definition, a problem): Back returns there.
     Jumped(usize),
+    /// The user right-clicked the editor; the workspace shows its menu at `position`.
+    ContextMenu { position: Point<Pixels> },
 }
 
 /// Where the next frame scrolls to.
@@ -1175,6 +1177,17 @@ impl Editor {
             .size_full()
             .cursor(CursorStyle::IBeam)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|_, event: &MouseDownEvent, window, cx| {
+                    // Keeps the menu's focus: without it, the editor takes focus
+                    // back after this handler runs.
+                    window.prevent_default();
+                    cx.emit(EditorEvent::ContextMenu {
+                        position: event.position,
+                    });
+                }),
+            )
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(
                 MouseButton::Left,

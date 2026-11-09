@@ -54,7 +54,7 @@ Left out on purpose; each can come later without reshaping what exists.
 - Split editors and more than one window. Soft wrap, a minimap, folding.
 - Find in files, rename symbol, references, code actions, signature help, inlay hints,
   semantic tokens, snippets.
-- A file context menu, drag-and-drop within the explorer, and permanent deletion from it
+- Drag-and-drop within the explorer, and permanent deletion from it
   (the Trash is as far as it goes).
 - Grapheme clusters: the cursor moves by code point (an emoji with modifiers takes several
   steps).
@@ -372,6 +372,13 @@ and no bottom border, so it runs into the editor. A dot for unsaved, giving way 
 under the pointer, which is also when an inactive tab shows its ×; two tabs with one
 file name show their folders after it; middle-click closes; the pointer resting on one
 shows the file's full path.
+
+**Menus**: right-clicking a tab, an explorer entry or the editor opens its menu at the
+pointer. A tab offers closing (this tab, others, to the right, saved, all), Copy Path
+and Reveal in Finder; an explorer file opens, copies its path and reveals in Finder,
+a folder also creates entries inside and expands or collapses, and both rename and move
+to the Trash; the editor offers Cut, Copy, Paste and Select All. A click elsewhere or
+Escape closes the menu, and the focus goes back to where it was.
 
 **Status bar**: problems (click: next), the server's status, a short message ("No definition
 found"); then `Ln, Col` with the selection or cursor count, indentation, line ending,
