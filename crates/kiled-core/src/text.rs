@@ -170,7 +170,10 @@ pub fn line_end(rope: &Rope, line: usize) -> usize {
 #[must_use]
 pub fn char_width(ch: char, col: usize, tab: usize) -> usize {
     match ch {
-        '\t' => tab - col % tab,
+        '\t' => {
+            let tab = tab.max(1);
+            tab - col % tab
+        }
         _ => ch.width().unwrap_or(0),
     }
 }
@@ -178,6 +181,7 @@ pub fn char_width(ch: char, col: usize, tab: usize) -> usize {
 /// The display column of char `offset` within its line.
 #[must_use]
 pub fn column(rope: &Rope, offset: usize, tab: usize) -> usize {
+    let offset = offset.min(rope.len_chars());
     let line = rope.char_to_line(offset);
     let start = rope.line_to_char(line);
     rope.slice(start..offset)
@@ -189,6 +193,7 @@ pub fn column(rope: &Rope, offset: usize, tab: usize) -> usize {
 /// A column inside a wide char or a tab lands before it unless it is past its middle.
 #[must_use]
 pub fn offset_at_column(rope: &Rope, line: usize, col: usize, tab: usize) -> usize {
+    let line = line.min(rope.len_lines().saturating_sub(1));
     let start = rope.line_to_char(line);
     let mut at = 0;
     for (index, ch) in rope.slice(start..line_end(rope, line)).chars().enumerate() {
@@ -287,5 +292,28 @@ mod tests {
     fn line_len_should_not_count_the_line_break() {
         let rope = Rope::from("ab\ncd");
         assert_eq!((line_len(&rope, 0), line_len(&rope, 1)), (2, 2));
+    }
+
+    #[test]
+    fn char_width_should_treat_a_zero_tab_as_one() {
+        assert_eq!((char_width('\t', 0, 0), char_width('\t', 5, 0)), (1, 1));
+    }
+
+    #[test]
+    fn column_should_clamp_an_offset_past_the_end() {
+        let rope = Rope::from("ab");
+        assert_eq!(column(&rope, 99, 4), column(&rope, 2, 4));
+    }
+
+    #[test]
+    fn offset_at_column_should_clamp_a_line_past_the_end() {
+        let rope = Rope::from("ab\ncd");
+        assert_eq!(
+            (
+                offset_at_column(&rope, 99, 0, 4),
+                offset_at_column(&rope, 99, 99, 4)
+            ),
+            (3, 5)
+        );
     }
 }

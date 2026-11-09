@@ -493,6 +493,11 @@ impl Document {
 
     /// Replaces the diagnostics.
     pub fn set_diagnostics(&mut self, mut diagnostics: Vec<Diagnostic>) {
+        let len = self.rope.len_chars();
+        for diagnostic in &mut diagnostics {
+            diagnostic.range.start = diagnostic.range.start.min(len);
+            diagnostic.range.end = diagnostic.range.end.min(len).max(diagnostic.range.start);
+        }
         diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.severity));
         self.diagnostics = diagnostics;
     }
@@ -750,6 +755,32 @@ mod tests {
                 3,
                 5
             )
+        );
+    }
+
+    #[test]
+    fn set_diagnostics_should_clamp_ranges_into_the_text() {
+        let mut doc = doc("ab");
+        doc.set_diagnostics(vec![
+            Diagnostic {
+                range: 5..9,
+                severity: Severity::Error,
+                message: "past end".into(),
+                source: None,
+            },
+            Diagnostic {
+                range: 1..99,
+                severity: Severity::Warning,
+                message: "clipped".into(),
+                source: None,
+            },
+        ]);
+        assert_eq!(
+            doc.diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.range.clone())
+                .collect::<Vec<_>>(),
+            vec![1..2, 2..2]
         );
     }
 

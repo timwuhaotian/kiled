@@ -201,6 +201,11 @@ impl Editor {
     }
 
     pub(crate) fn trigger_suggest(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if self.server.is_none() || self.uri().is_none() {
+            self.message = Some("No language server for this file".into());
+            cx.notify();
+            return;
+        }
         self.request_completion(None, cx);
     }
 
@@ -266,13 +271,15 @@ impl Editor {
             .edit
             .as_ref()
             .map_or(menu.start, |edit| offset_of(rope, edit.start).min(head));
-        let mut changes = vec![Change {
+        // The extras come first: they end at or before `start`, so the whole set stays
+        // sorted as `apply_edits` needs it, and the main edit lands last.
+        let mut changes = extra_edits(rope, &item.additional, start);
+        let shift: isize = changes.iter().map(Change::delta).sum();
+        changes.push(Change {
             range: start..head,
             text: item.insert_text.clone(),
-        }];
-        changes.extend(extra_edits(rope, &item.additional, start));
+        });
         let end = start + len_chars(&item.insert_text);
-        let shift: isize = changes.iter().skip(1).map(Change::delta).sum();
         self.edit(cx, |doc| {
             let accepted = ops::apply_edits(doc, changes);
             if accepted {
@@ -534,6 +541,8 @@ impl Editor {
 
     pub(crate) fn format_document(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let (Some(server), Some(uri)) = (self.server, self.uri()) else {
+            self.message = Some("No language server for this file".into());
+            cx.notify();
             return;
         };
         self.commit_marked(cx);
@@ -564,14 +573,7 @@ impl Editor {
                 if this.doc.revision() != revision || this.doc.marked().is_some() {
                     return;
                 }
-                let rope = this.doc.rope();
-                let changes = edits
-                    .iter()
-                    .map(|edit| Change {
-                        range: offset_of(rope, edit.start)..offset_of(rope, edit.end),
-                        text: edit.text.clone(),
-                    })
-                    .collect();
+                let changes = to_changes(this.doc.rope(), &edits);
                 this.edit(cx, |doc| ops::apply_edits(doc, changes));
             });
         })
@@ -744,18 +746,26 @@ impl Editor {
     }
 }
 
-/// A completion's extra edits as changes, keeping only those clear of the word being
-/// completed (the server placed them in the text as it was when it was asked, and only
-/// text before the word is sure to be unchanged since) and the right way round.
-fn extra_edits(rope: &ropey::Rope, edits: &[protocol::TextEdit], start: usize) -> Vec<Change> {
-    edits
+/// A server's edits as changes against the current text, sorted so they apply last first.
+fn to_changes(rope: &ropey::Rope, edits: &[protocol::TextEdit]) -> Vec<Change> {
+    let mut changes: Vec<Change> = edits
         .iter()
         .map(|edit| Change {
             range: offset_of(rope, edit.start)..offset_of(rope, edit.end),
             text: edit.text.clone(),
         })
-        .filter(|change| change.range.start <= change.range.end && change.range.end <= start)
-        .collect()
+        .collect();
+    changes.sort_by_key(|change| (change.range.start, change.range.end));
+    changes
+}
+
+/// A completion's extra edits as changes, keeping only those clear of the word being
+/// completed (the server placed them in the text as it was when it was asked, and only
+/// text before the word is sure to be unchanged since).
+fn extra_edits(rope: &ropey::Rope, edits: &[protocol::TextEdit], start: usize) -> Vec<Change> {
+    let mut changes = to_changes(rope, edits);
+    changes.retain(|change| change.range.start <= change.range.end && change.range.end <= start);
+    changes
 }
 
 #[derive(Clone, Copy)]
@@ -841,4 +851,67 @@ fn label_piece(text: String, matched: bool, colors: PopoverColors) -> AnyElement
         .text_color(if matched { colors.accent } else { colors.text })
         .child(text)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+    use kiled_core::{document::Position, lsp::protocol::TextEdit};
+    use ropey::Rope;
+
+    use super::*;
+    use crate::editor::tests::editor_with;
+
+    fn text_edit(start: u32, end: u32, text: &str) -> TextEdit {
+        TextEdit {
+            start: Position {
+                line: 0,
+                character: start,
+            },
+            end: Position {
+                line: 0,
+                character: end,
+            },
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn extra_edits_should_keep_only_edits_before_the_word_sorted() {
+        let rope = Rope::from("hello world");
+        let edits = vec![
+            text_edit(5, 5, "!"),
+            text_edit(0, 0, "use "),
+            text_edit(8, 9, "X"),
+            text_edit(3, 2, "bad"),
+        ];
+        let kept: Vec<(Range<usize>, String)> = extra_edits(&rope, &edits, 6)
+            .iter()
+            .map(|change| (change.range.clone(), change.text.clone()))
+            .collect();
+        assert_eq!(
+            kept,
+            vec![(0..0, "use ".to_owned()), (5..5, "!".to_owned())]
+        );
+    }
+
+    #[gpui::test]
+    fn format_document_should_say_when_there_is_no_server(cx: &mut TestAppContext) {
+        let (editor, cx) = editor_with("fn main() {}\n", None, cx);
+        cx.simulate_keystrokes("shift-alt-f");
+        let message = editor.read_with(cx, |editor, _| {
+            editor.message.clone().map(|m| m.to_string())
+        });
+        assert_eq!(message.as_deref(), Some("No language server for this file"));
+    }
+
+    #[gpui::test]
+    fn trigger_suggest_should_say_when_there_is_no_server(cx: &mut TestAppContext) {
+        let (editor, cx) = editor_with("fn main() {}\n", None, cx);
+        cx.simulate_keystrokes("ctrl-space");
+        let message = editor.read_with(cx, |editor, _| {
+            editor.message.clone().map(|m| m.to_string())
+        });
+        assert_eq!(message.as_deref(), Some("No language server for this file"));
+    }
 }

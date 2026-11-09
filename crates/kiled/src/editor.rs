@@ -257,11 +257,7 @@ impl Editor {
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
             cx.on_focus(&focus_handle, window, |this, _, cx| this.show_cursor(cx)),
-            cx.on_blur(&focus_handle, window, |this, _, cx| {
-                this.drag = None;
-                this.hover = None;
-                cx.notify();
-            }),
+            cx.on_blur(&focus_handle, window, |this, _, cx| this.blurred(cx)),
         ];
         Self {
             focus_handle,
@@ -540,6 +536,14 @@ impl Editor {
         }
     }
 
+    /// Focus left: no drag can continue, and hover dies with the pointer's attention.
+    fn blurred(&mut self, cx: &mut Context<Self>) {
+        self.drag = None;
+        self.scrollbar_drag = None;
+        self.hover = None;
+        cx.notify();
+    }
+
     /// One tick of the window's blink timer: toggles the cursor unless typing just happened.
     pub fn blink(&mut self, cx: &mut Context<Self>) {
         let typing = self.last_input.elapsed() < BLINK_INTERVAL;
@@ -561,10 +565,8 @@ impl Editor {
         let geometry = self.geometry?;
         let rope = self.doc.rope();
         let y = (position.y - geometry.bounds.top()) / geometry.line_height + self.scroll_top;
-        let line = whole(y);
-        if line >= rope.len_lines() {
-            return Some(rope.len_chars());
-        }
+        // Below the last line still lands on it, at that column, as in VS Code.
+        let line = whole(y).min(rope.len_lines().saturating_sub(1));
         let x = (position.x - geometry.text_left + self.scroll_left) / geometry.cell_width;
         let col = whole(x + 0.5);
         Some(text::offset_at_column(rope, line, col, self.tab_width()))
@@ -953,12 +955,13 @@ impl Editor {
         cx.emit(EditorEvent::Jumped(from));
     }
 
-    /// Where the primary cursor is, 1-based, as the status bar shows it.
+    /// Where the primary cursor is, in 1-based character columns, as the status bar shows
+    /// it and [`Self::go_to_line`] reads it back: a tab is one column, as in VS Code.
     pub fn cursor_position(&self) -> (usize, usize) {
         let rope = self.doc.rope();
         let head = self.doc.selections().primary().head;
         let line = rope.char_to_line(head);
-        (line + 1, text::column(rope, head, self.tab_width()) + 1)
+        (line + 1, head - rope.line_to_char(line) + 1)
     }
 
     // ── mouse ─────────────────────────────────────────────────────────────────────────
@@ -1003,7 +1006,7 @@ impl Editor {
                 (start, end, DragMode::Line(start..end))
             }
             _ if modifiers.shift => {
-                let anchor = self.doc.selections().primary().anchor;
+                let anchor = self.doc.selections().newest().anchor;
                 (anchor, offset, DragMode::Char)
             }
             _ => (offset, offset, DragMode::Char),
@@ -1634,5 +1637,72 @@ pub(crate) mod tests {
         cx.simulate_click(inside(second), Modifiers::alt());
         cx.simulate_input("X");
         assert_eq!(text(&editor, cx), "aXaaa\nbbXbb\n");
+    }
+
+    #[gpui::test]
+    fn cursor_position_should_count_a_tab_as_one_column_and_round_trip(cx: &mut TestAppContext) {
+        let (editor, cx) = editor_with("\tx", None, cx);
+        editor.update(cx, |editor, _| {
+            editor
+                .doc
+                .set_selections(Selections::single(Selection::cursor(1)));
+        });
+        let position = editor.read_with(cx, |editor, _| editor.cursor_position());
+        editor.update_in(cx, |editor, _, cx| editor.go_to_line(1, Some(2), cx));
+        let head = editor.read_with(cx, |editor, _| editor.doc.selections().primary().head);
+        assert_eq!((position, head), ((1, 2), 1));
+    }
+
+    #[gpui::test]
+    fn a_click_below_the_last_line_should_land_on_it_at_that_column(cx: &mut TestAppContext) {
+        let (editor, cx) = editor_with("abc", None, cx);
+        cx.run_until_parked();
+        let geometry = editor.read_with(cx, |editor, _| editor.geometry.unwrap());
+        let end = editor.read_with(cx, |editor, _| editor.point_of(3).unwrap());
+        let below = point(
+            geometry.text_left + px(1.),
+            end.y + geometry.line_height + geometry.line_height,
+        );
+        cx.simulate_click(below, Modifiers::none());
+        let head = editor.read_with(cx, |editor, _| editor.doc.selections().primary().head);
+        assert_eq!(head, 0);
+    }
+
+    #[gpui::test]
+    fn shift_click_should_extend_from_the_newest_cursor(cx: &mut TestAppContext) {
+        let (editor, cx) = editor_with("aaaa\nbbbb\n", None, cx);
+        cx.run_until_parked();
+        let (first, second, third) = editor.read_with(cx, |editor, _| {
+            (
+                editor.point_of(1).unwrap(),
+                editor.point_of(7).unwrap(),
+                editor.point_of(3).unwrap(),
+            )
+        });
+        let lh = editor.read_with(cx, |editor, _| editor.geometry.unwrap().line_height);
+        let inside = |p: Point<Pixels>| point(p.x + px(1.), p.y + lh / 2.);
+        cx.simulate_click(inside(first), Modifiers::none());
+        cx.simulate_click(inside(second), Modifiers::alt());
+        cx.simulate_click(inside(third), Modifiers::shift());
+        let selection = editor.read_with(cx, |editor, _| *editor.doc.selections().primary());
+        assert_eq!((selection.anchor, selection.head), (7, 3));
+    }
+
+    #[gpui::test]
+    fn losing_focus_should_end_any_drag_including_the_scrollbar(cx: &mut TestAppContext) {
+        let (editor, cx) = editor_with("x\n", None, cx);
+        editor.update(cx, |editor, cx| {
+            editor.drag = Some(Drag {
+                anchor: 0,
+                mode: DragMode::Char,
+                adding: false,
+            });
+            editor.scrollbar_drag = Some(px(4.));
+            editor.blurred(cx);
+        });
+        let dragging = editor.read_with(cx, |editor, _| {
+            (editor.drag.is_some(), editor.scrollbar_drag.is_some())
+        });
+        assert_eq!(dragging, (false, false));
     }
 }

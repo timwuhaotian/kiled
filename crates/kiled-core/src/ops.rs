@@ -217,7 +217,18 @@ pub fn type_char(doc: &mut Document, ch: char) -> bool {
         return true;
     }
     let opens = closer_of(ch, quotes);
+    let skip = is_closer(ch, quotes);
     edit_each(doc, EditKind::Typing, |rope, selection| {
+        // A cursor already before its closer steps over it, even when other cursors
+        // insert: a no-op change carrying the cursor one char forward.
+        if skip && selection.is_empty() && char_at(rope, selection.head) == Some(ch) {
+            return Some(Edit {
+                range: selection.head..selection.head,
+                text: String::new(),
+                anchor: 1,
+                head: 1,
+            });
+        }
         if let Some(close) = opens {
             if !selection.is_empty() {
                 let inner = rope.slice(selection.range()).to_string();
@@ -400,15 +411,14 @@ fn is_blank(rope: &Rope, line: usize) -> bool {
     rope.line(line).chars().all(char::is_whitespace)
 }
 
-/// Tab: indents the lines of a selection spanning lines; otherwise types an indent to the
-/// next stop.
+/// Tab: indents the covered lines when any selection is non-empty (VS Code never
+/// replaces a selection with Tab); otherwise types an indent to the next stop.
 pub fn tab(doc: &mut Document) -> bool {
-    let rope = doc.rope();
-    let multiline = doc
+    if doc
         .selections()
         .iter()
-        .any(|selection| covered_lines(rope, selection).len() > 1);
-    if multiline {
+        .any(|selection| !selection.is_empty())
+    {
         return indent_lines(doc);
     }
     let unit = doc.indent();
@@ -1114,6 +1124,13 @@ mod tests {
     }
 
     #[test]
+    fn type_char_should_type_over_per_cursor_when_mixed() {
+        let mut doc = doc("|x (|)");
+        type_char(&mut doc, ')');
+        assert_eq!(shown(&doc), ")|x ()|");
+    }
+
+    #[test]
     fn a_bracket_should_wrap_the_selection() {
         let mut doc = doc("[abc]");
         type_char(&mut doc, '[');
@@ -1193,6 +1210,13 @@ mod tests {
         let mut doc = doc("ab|");
         tab(&mut doc);
         assert_eq!(shown(&doc), "ab  |");
+    }
+
+    #[test]
+    fn tab_should_indent_a_single_line_selection() {
+        let mut doc = doc("[ab]\n");
+        tab(&mut doc);
+        assert_eq!(shown(&doc), "[    ab]\n");
     }
 
     #[test]

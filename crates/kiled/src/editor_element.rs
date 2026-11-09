@@ -17,8 +17,10 @@ use gpui::{
 use kiled_core::{
     document::Severity,
     language::Highlight,
+    selection::Selections,
     text::{self, char_width},
 };
+use ropey::Rope;
 
 use crate::{
     editor::{Editor, Geometry, Reveal},
@@ -250,9 +252,11 @@ impl Element for EditorElement {
             cx,
         );
         let line_height = layout.line_height;
-        for quad in layout.backgrounds.drain(..) {
-            window.paint_quad(quad);
-        }
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            for quad in layout.backgrounds.drain(..) {
+                window.paint_quad(quad);
+            }
+        });
         window.with_content_mask(
             Some(ContentMask {
                 bounds: layout.text_area,
@@ -266,12 +270,14 @@ impl Element for EditorElement {
                 }
             },
         );
-        for (origin, line) in &layout.numbers {
-            let _ = line.paint(*origin, line_height, window, cx);
-        }
-        for quad in layout.overlays.drain(..) {
-            window.paint_quad(quad);
-        }
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            for (origin, line) in &layout.numbers {
+                let _ = line.paint(*origin, line_height, window, cx);
+            }
+            for quad in layout.overlays.drain(..) {
+                window.paint_quad(quad);
+            }
+        });
     }
 }
 
@@ -320,6 +326,25 @@ pub(crate) fn whole(value: f32) -> usize {
     value.max(0.) as usize
 }
 
+/// How wide the text is, never negative: a window narrower than the gutter would
+/// otherwise invert the text area and throw the horizontal scroll off.
+fn text_width(available: Pixels, gutter: Pixels, scrollbar: bool) -> Pixels {
+    (available - gutter - if scrollbar { SCROLLBAR_WIDTH } else { px(0.) }).max(px(0.))
+}
+
+/// Lines holding an empty selection, sorted and unique, for the current-line
+/// background and the brighter numbers.
+fn cursor_lines(selections: &Selections, rope: &Rope) -> Vec<usize> {
+    let mut lines: Vec<usize> = selections
+        .iter()
+        .filter(|selection| selection.is_empty())
+        .map(|selection| rope.char_to_line(selection.head))
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines
+}
+
 /// Scrolls to what the editor asked to reveal, keeping a margin of lines and columns.
 fn apply_reveal(editor: &mut Editor, visible: f32, text_width: Pixels, cell: Pixels) {
     let Some(reveal) = editor.reveal.take() else {
@@ -345,6 +370,9 @@ fn apply_reveal(editor: &mut Editor, visible: f32, text_width: Pixels, cell: Pix
         }
     }
     editor.scroll_top = editor.scroll_top.clamp(0., editor.max_scroll_top());
+    if text_width <= px(0.) {
+        return;
+    }
     let x = cell * f(text::column(rope, offset, tab));
     if x < editor.scroll_left {
         editor.scroll_left = (x - cell * 4.).max(px(0.));
@@ -377,7 +405,7 @@ fn layout(
     let text_left = bounds.left() + gutter;
     let visible = (bounds.size.height / line_height).max(1.);
     let tall = f(line_count) > visible.floor();
-    let text_width = bounds.size.width - gutter - if tall { SCROLLBAR_WIDTH } else { px(0.) };
+    let text_width = text_width(bounds.size.width, gutter, tall);
     apply_reveal(editor, visible.floor(), text_width, cell);
     editor.scroll_top = editor.scroll_top.clamp(0., editor.max_scroll_top());
     let scrollbar = tall.then(|| {
@@ -413,13 +441,7 @@ fn layout(
     let rope = editor.doc.rope();
     let selections = editor.doc.selections();
     let mut backgrounds = Vec::new();
-    let mut cursor_lines: Vec<usize> = Vec::new();
-    for selection in selections.iter() {
-        let line = rope.char_to_line(selection.head);
-        if selection.is_empty() && !cursor_lines.contains(&line) {
-            cursor_lines.push(line);
-        }
-    }
+    let cursor_lines = cursor_lines(selections, rope);
     for &line in &cursor_lines {
         if (first..last).contains(&line) {
             backgrounds.push(fill(
@@ -465,9 +487,8 @@ fn layout(
             }
         }
     };
-    for selection in selections.iter() {
-        range_quads(&selection.range(), colors.selection, &mut backgrounds);
-    }
+    // Find matches below the selections, as in VS Code: the selection follows a match
+    // while typing, and must stay visible on top of it.
     if let Some(find) = &editor.find {
         let first_char = rope.line_to_char(first);
         let last_char = rope.line_to_char(last.min(rope.len_lines().saturating_sub(1)));
@@ -483,6 +504,9 @@ fn layout(
             };
             range_quads(found, color, &mut backgrounds);
         }
+    }
+    for selection in selections.iter() {
+        range_quads(&selection.range(), colors.selection, &mut backgrounds);
     }
 
     // Text, segment by segment.
@@ -502,7 +526,7 @@ fn layout(
             .find(|(kind, _)| *kind == severity)
             .map_or(colors.text, |(_, color)| *color)
     };
-    let view_start = rope.line_to_char(first.min(line_count - 1));
+    let view_start = rope.line_to_char(first.min(line_count.saturating_sub(1)));
     let view_end = text::line_end(rope, last.saturating_sub(1));
     let in_view: Vec<(Range<usize>, Severity)> = diagnostics
         .iter()
@@ -597,7 +621,7 @@ fn layout(
     let mut numbers = Vec::new();
     for line in first..last {
         let label = (line + 1).to_string();
-        let color = if cursor_lines.contains(&line) {
+        let color = if cursor_lines.binary_search(&line).is_ok() {
             colors.numbers_current
         } else {
             colors.muted
@@ -663,5 +687,34 @@ fn layout(
         numbers,
         cursors,
         overlays,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kiled_core::selection::{Selection, Selections};
+
+    use super::*;
+
+    #[test]
+    fn text_width_should_never_go_negative() {
+        assert_eq!(text_width(px(100.), px(60.), true), px(30.));
+        assert_eq!(text_width(px(50.), px(60.), true), px(0.));
+        assert_eq!(text_width(px(50.), px(60.), false), px(0.));
+    }
+
+    #[test]
+    fn cursor_lines_should_keep_empty_lines_sorted_and_unique() {
+        let rope = Rope::from("ab\ncd\nef\n");
+        let selections = Selections::from_vec(
+            vec![
+                Selection::cursor(7),
+                Selection::cursor(0),
+                Selection::cursor(1),
+                Selection::new(3, 5),
+            ],
+            10,
+        );
+        assert_eq!(cursor_lines(&selections, &rope), vec![0, 2]);
     }
 }
