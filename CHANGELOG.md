@@ -6,6 +6,15 @@ versions below are how we track releases, and match `Cargo.toml` and the app's I
 
 ## Unreleased
 
+## 0.0.8 — 2026-11-09
+
+- **Editing acts like VS Code in more corners.** Tab with a selection indents the
+  lines instead of replacing the text; a cursor before a closer steps over it even
+  when other cursors insert; the status bar counts a tab as one column, so Go to
+  Line and reopened sessions land where shown; clicks below the last line land on
+  it; shift-click extends from the newest cursor.
+- Trigger Suggest and Format Document say there is no language server for the file
+  instead of staying silent.
 - **Updates download again.** GitHub's `github.com/<repo>/raw/<branch>/<file>` link answers
   **504**, so the updater could not download a release (**Kiled can't update right now**),
   and the README's download link was dead too. Every file Kiled fetches now comes from
