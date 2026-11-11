@@ -477,7 +477,7 @@ impl Workspace {
                     .file_name()
                     .map_or_else(|| from.to_string_lossy(), |name| name.to_string_lossy());
                 self.notices
-                    .push(format!("Can't rename {old}: {err}.").into());
+                    .push(format!("Can't rename {old} to {name}: {err}.").into());
                 cx.notify();
                 return;
             }
@@ -552,7 +552,10 @@ impl Workspace {
                 });
                 if dirty {
                     this.notices.push(
-                        format!("{name} has unsaved changes. Save or close it first.").into(),
+                        format!(
+                            "Can't move {name} to the Trash: an open file has unsaved changes. Save or close that file first."
+                        )
+                        .into(),
                     );
                     cx.notify();
                     return;

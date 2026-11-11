@@ -337,7 +337,8 @@ impl Lsp {
         let (client, mut events) = match Client::start(&program, &args, &server.root, &path) {
             Ok(started) => started,
             Err(err) => {
-                server.state = State::Failed(format!("{}: {err}", program.display()).into());
+                server.state =
+                    State::Failed(format!("couldn't start {}: {err}", program.display()).into());
                 cx.notify();
                 return;
             }

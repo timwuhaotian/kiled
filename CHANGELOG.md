@@ -6,6 +6,12 @@ versions below are how we track releases, and match `Cargo.toml` and the app's I
 
 ## Unreleased
 
+## 0.0.10 — 2026-11-11
+
+- **Clearer interface copy.** Buttons, empty states, settings and shortcut recording use
+  specific labels. Save, file, configuration, language-server, session and update failures
+  explain what happened and how to recover.
+
 ## 0.0.9 — 2026-11-09
 
 - **Right-click menus.** A tab offers closing (this tab, others, to the right, saved,

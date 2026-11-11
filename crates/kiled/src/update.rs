@@ -110,7 +110,7 @@ fn replaceable_bundle(exe: &Path) -> Result<PathBuf, &'static str> {
         .filter(|dir| dir.ends_with("Contents/MacOS"))
         .and_then(|dir| dir.parent()?.parent())
         .filter(|bundle| bundle.extension().is_some_and(|ext| ext == "app"))
-        .ok_or("Kiled isn't running from Kiled.app")?;
+        .ok_or("Kiled can only update an installed Kiled.app. Install a signed release, then open it to check for updates.")?;
     let path = bundle.to_string_lossy();
     if path.starts_with("/Volumes/") || path.contains("/AppTranslocation/") {
         return Err("Kiled is running from the disk image: drag it to Applications first");
@@ -232,9 +232,13 @@ fn bundle_version(app: &Path) -> Result<String, String> {
 
 /// Checks that `app` is Kiled `version`, signed by `team` and notarized by Apple.
 fn verify(app: &Path, version: &str, team: &str) -> Result<(), String> {
-    let shown = bundle_version(app)?;
+    let shown = bundle_version(app).map_err(|err| {
+        format!("Kiled couldn't read the downloaded app's version, so the update wasn't installed. Try again later. ({err})")
+    })?;
     if shown != version {
-        return Err(format!("the download is Kiled {shown}, not {version}"));
+        return Err(format!(
+            "The downloaded app is Kiled {shown}, not Kiled {version}. It wasn't installed; try again later."
+        ));
     }
     let requirement =
         format!("=anchor apple generic and certificate leaf[subject.OU] = \"{team}\"");
@@ -249,7 +253,7 @@ fn verify(app: &Path, version: &str, team: &str) -> Result<(), String> {
             app.as_os_str(),
         ],
     )
-    .map_err(|err| format!("the download isn't signed as Kiled is ({err})"))?;
+    .map_err(|err| format!("The update's signature doesn't match this copy of Kiled, so it wasn't installed. Try again later. ({err})"))?;
     run(
         "/usr/sbin/spctl",
         &[
@@ -259,7 +263,11 @@ fn verify(app: &Path, version: &str, team: &str) -> Result<(), String> {
             app.as_os_str(),
         ],
     )
-    .map_err(|err| format!("Apple hasn't notarized the download ({err})"))?;
+    .map_err(|err| {
+        format!(
+            "Apple hasn't notarized this update, so it wasn't installed. Try again later. ({err})"
+        )
+    })?;
     Ok(())
 }
 
@@ -276,8 +284,13 @@ pub fn fetch_manifest(url: &str) -> Result<Manifest, String> {
             "30".as_ref(),
             url.as_ref(),
         ],
-    )?;
-    Manifest::parse(&text)
+    )
+    .map_err(|err| {
+        format!("Kiled couldn't check for updates. Check your internet connection, or try again later. ({err})")
+    })?;
+    Manifest::parse(&text).map_err(|err| {
+        format!("The update server returned invalid release information. Try again later. ({err})")
+    })
 }
 
 /// Downloads the DMG at `dmg_url` into `dir`, checks it against `manifest` and `team`, and
@@ -306,20 +319,27 @@ pub fn stage(
         }
     }
     let _ = fs::remove_dir_all(dir);
-    fs::create_dir_all(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+    fs::create_dir_all(dir).map_err(|err| {
+        format!("Kiled couldn't create its update cache at {}. Check free disk space and folder permissions, then try again. ({err})", dir.display())
+    })?;
     let dmg = dir.join("Kiled.dmg");
-    download(dmg_url, &dmg, version, progress)?;
+    download(dmg_url, &dmg, version, progress).map_err(|err| {
+        format!("Kiled couldn't download the update. Check your internet connection, or try again later. ({err})")
+    })?;
     verifying();
     let sum = run(
         "/usr/bin/shasum",
         &["-a".as_ref(), "256".as_ref(), dmg.as_os_str()],
-    )?;
+    )
+    .map_err(|err| {
+        format!("Kiled couldn't verify the update's checksum, so it wasn't installed. Check for updates again to retry. ({err})")
+    })?;
     if !sum
         .split_whitespace()
         .next()
         .is_some_and(|sum| sum.eq_ignore_ascii_case(&manifest.sha256))
     {
-        return Err("the download doesn't match its checksum".to_owned());
+        return Err("The update download didn't match its checksum, so it wasn't installed. Check for updates again to retry the download.".to_owned());
     }
     let mount = dir.join("mnt");
     run(
@@ -334,7 +354,10 @@ pub fn stage(
             mount.as_os_str(),
             dmg.as_os_str(),
         ],
-    )?;
+    )
+    .map_err(|err| {
+        format!("Kiled couldn't open the update disk image, so it wasn't installed. Check for updates again to retry. ({err})")
+    })?;
     let copied = run(
         "/usr/bin/ditto",
         &[mount.join("Kiled.app").as_os_str(), app.as_os_str()],
@@ -349,7 +372,9 @@ pub fn stage(
     if detach(false).is_err() {
         let _ = detach(true);
     }
-    copied?;
+    copied.map_err(|err| {
+        format!("Kiled couldn't copy the update into its cache. Check free disk space and folder permissions, then try again. ({err})")
+    })?;
     let _ = fs::remove_file(&dmg);
     verify(&app, version, team).inspect_err(|_| {
         let _ = fs::remove_dir_all(&app);
@@ -392,14 +417,18 @@ fn writable(dir: &Path) -> Result<(), String> {
     let probe = dir.join(format!(".kiled-update-{}", std::process::id()));
     fs::create_dir(&probe)
         .and_then(|()| fs::remove_dir(&probe))
-        .map_err(|err| format!("Kiled can't replace itself in {} ({err})", dir.display()))
+        .map_err(|err| {
+            format!("Kiled can't install updates in {}. Move Kiled to a folder you can write, then try again. ({err})", dir.display())
+        })
 }
 
 /// `~/Library/Caches/dev.kil.editor/update`.
 fn cache_dir() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
         .map(|home| PathBuf::from(home).join("Library/Caches/dev.kil.editor/update"))
-        .ok_or_else(|| "no home directory".to_owned())
+        .ok_or_else(|| {
+            "Kiled can't store updates because it can't find your home directory. Check that HOME is set, then try again.".to_owned()
+        })
 }
 
 /// A newer Kiled, checked and waiting for Kiled to quit.
@@ -417,10 +446,12 @@ enum Found {
 
 /// One check, start to end; blocks, so it runs on a background thread.
 fn find(current: &str, progress: &Progress) -> Result<Found, String> {
-    let exe = std::env::current_exe().map_err(|err| err.to_string())?;
+    let exe = std::env::current_exe().map_err(|err| {
+        format!("Kiled can't locate the running app ({err}). Reopen Kiled and try again.")
+    })?;
     let bundle = replaceable_bundle(&exe)?;
     let team = team_of(&bundle).ok_or(
-        "this copy of Kiled isn't signed with a Developer ID, so it doesn't update itself",
+        "This copy of Kiled isn't signed with a Developer ID and can't update itself. Install a signed release to enable updates.",
     )?;
     let manifest = fetch_manifest(MANIFEST_URL)?;
     if !is_newer(&manifest.version, current) {

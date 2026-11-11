@@ -398,10 +398,17 @@ impl Editor {
     /// If it has no path, or writing fails.
     pub fn save(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
         self.commit_marked(cx);
-        let path = self.path.clone().ok_or("an untitled file needs a name")?;
+        let path = self
+            .path
+            .clone()
+            .ok_or("Can't save an untitled file. Use Save As to choose a name and location.")?;
         let text = self.doc.text_for_save();
-        let stamp =
-            files::save(&path, &text).map_err(|err| format!("{}: {err}", path.display()))?;
+        let stamp = files::save(&path, &text).map_err(|err| {
+            format!(
+                "Can't save {}: {err}. Your edits are still in the editor.",
+                path.display()
+            )
+        })?;
         self.stamp = Some(stamp);
         self.conflict = false;
         self.doc.mark_saved();
@@ -466,9 +473,16 @@ impl Editor {
     /// # Errors
     /// If it can't be read.
     pub fn reload(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
-        let path = self.path.clone().ok_or("no file")?;
-        let (text, stamp) =
-            files::load(&path).map_err(|err| format!("{}: {err}", path.display()))?;
+        let path = self
+            .path
+            .clone()
+            .ok_or("Can't reload an untitled file. Save it first.")?;
+        let (text, stamp) = files::load(&path).map_err(|err| {
+            format!(
+                "Can't reload {}: {err}. The editor's contents are unchanged.",
+                path.display()
+            )
+        })?;
         self.doc.reload(&text);
         self.stamp = Some(stamp);
         self.conflict = false;

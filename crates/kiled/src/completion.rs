@@ -552,7 +552,8 @@ impl Editor {
             "textDocument/formatting",
             protocol::formatting_params(&uri, indent),
         ) else {
-            self.message = Some("The language server doesn't format".into());
+            self.message =
+                Some("Formatting is unavailable because the language server isn't running".into());
             cx.notify();
             return;
         };
@@ -563,7 +564,7 @@ impl Editor {
                 let edits = match result {
                     Ok(result) => protocol::text_edits(&result),
                     Err(err) => {
-                        this.message = Some(format!("Format failed: {err}").into());
+                        this.message = Some(format!("Formatting failed: {err}").into());
                         cx.notify();
                         return;
                     }

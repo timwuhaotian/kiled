@@ -163,7 +163,9 @@ impl Client {
                     .flat_map(HashMap::into_values)
                     .collect();
                 for reply in waiting {
-                    reply(Err("the language server stopped".to_owned()));
+                    reply(Err(
+                        "the language server stopped; check the status bar for details".to_owned(),
+                    ));
                 }
                 let _ = reader_stop.send(());
             })?;
@@ -206,7 +208,9 @@ impl Client {
         if let Some(pending) = lock(&self.shared.pending).as_mut() {
             pending.insert(id, reply);
         } else {
-            reply(Err("the language server stopped".to_owned()));
+            reply(Err(
+                "the language server stopped; check the status bar for details".to_owned(),
+            ));
             return;
         }
         self.send(&message(Some(id), method, params));
@@ -230,8 +234,9 @@ impl Client {
             }),
         );
         async move {
-            rx.await
-                .unwrap_or_else(|_| Err("the language server stopped".to_owned()))
+            rx.await.unwrap_or_else(|_| {
+                Err("the language server stopped; check the status bar for details".to_owned())
+            })
         }
     }
 
@@ -403,7 +408,7 @@ fn dispatch(
                     Some(error) => Err(error
                         .get("message")
                         .and_then(Value::as_str)
-                        .unwrap_or("the server failed")
+                        .unwrap_or("the language server returned an error without a message")
                         .to_owned()),
                     None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
                 };
@@ -576,6 +581,9 @@ done
         )
         .unwrap();
         let result = block_on(client.request("initialize", json!({})));
-        assert!(result.is_err());
+        assert_eq!(
+            result,
+            Err("the language server stopped; check the status bar for details".to_owned())
+        );
     }
 }

@@ -305,7 +305,7 @@ impl Editor {
             hover: theme.hover,
             error: theme.failure,
         };
-        let count = find.summary();
+        let count = find.summary(find.query.read(cx).text().is_empty());
         let toggles = option_toggles(&find.options, colors, cx);
         let find_row = div()
             .flex()
@@ -386,10 +386,11 @@ impl Editor {
 }
 
 impl FindBar {
-    /// "3 of 12", "No results", or why the regex is invalid.
-    fn summary(&self) -> SharedString {
+    /// "3 of 12", an empty-query prompt, "No results", or why the regex is invalid.
+    fn summary(&self, query_empty: bool) -> SharedString {
         match (&self.error, self.matches.len(), self.current) {
             (Some(error), _, _) => error.clone(),
+            (None, 0, _) if query_empty => "Type to find".into(),
             (None, 0, _) => "No results".into(),
             (None, count, current) => {
                 let total = if count >= MATCH_LIMIT {
@@ -423,7 +424,7 @@ fn replace_row(
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.replace_one(cx))),
         )
         .child(
-            bar_button("replace-all", "All", colors)
+            bar_button("replace-all", "Replace All", colors)
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.replace_all(cx))),
         )
 }

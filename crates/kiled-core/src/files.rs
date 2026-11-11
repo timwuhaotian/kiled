@@ -97,13 +97,16 @@ pub fn save(path: &Path, contents: &str) -> io::Result<Stamp> {
     };
     if let Some(meta) = &existing {
         if !meta.is_file() {
-            return Err(io::Error::other("it isn't a regular file"));
+            return Err(io::Error::other("it isn't a file"));
         }
         // Renaming over a file needs no right to write it, so that is asked first: its
         // mode, an ACL or a lock may forbid it.
         if let Err(err) = OpenOptions::new().write(true).open(&path) {
             return Err(match err.kind() {
-                io::ErrorKind::PermissionDenied => io::Error::new(err.kind(), "it is read-only"),
+                io::ErrorKind::PermissionDenied => io::Error::new(
+                    err.kind(),
+                    "it is read-only; make it writable and try again",
+                ),
                 _ => err,
             });
         }
@@ -293,19 +296,19 @@ pub fn list_project(root: &Path, limit: usize) -> Vec<PathBuf> {
 /// byte, is `.` or `..`, or is longer than 255 bytes.
 pub fn validate_name(name: &str) -> Result<(), String> {
     if name.trim().is_empty() {
-        return Err("a name can't be empty".to_owned());
+        return Err("Enter a name".to_owned());
     }
     if name.contains('/') {
-        return Err("a name can't contain /".to_owned());
+        return Err("Names can't contain /".to_owned());
     }
     if name.contains('\0') {
-        return Err("a name can't contain a NUL byte".to_owned());
+        return Err("Names can't contain NUL bytes".to_owned());
     }
     if matches!(name, "." | "..") {
-        return Err("a name can't be . or ..".to_owned());
+        return Err("Choose a name other than . or ..".to_owned());
     }
     if name.len() > 255 {
-        return Err("a name can't be longer than 255 bytes".to_owned());
+        return Err("Names must be 255 bytes or fewer".to_owned());
     }
     Ok(())
 }
@@ -317,7 +320,7 @@ fn checked_name(name: &str) -> io::Result<()> {
 fn already_exists(name: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::AlreadyExists,
-        format!("{name} already exists"),
+        format!("{name} already exists; choose another name"),
     )
 }
 
@@ -619,7 +622,7 @@ mod tests {
         }
         assert_eq!(
             validate_name("a/b"),
-            Err("a name can't contain /".to_owned())
+            Err("Names can't contain /".to_owned())
         );
         assert!(validate_name("a.rs").is_ok());
         assert!(validate_name(" a.rs ").is_ok());

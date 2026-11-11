@@ -410,7 +410,9 @@ impl FileTree {
                 let name = text.to_string();
                 // A refused name keeps the field open, so the user can fix it.
                 if let Err(err) = files::validate_name(&name) {
-                    cx.emit(TreeEvent::Notice(err));
+                    cx.emit(TreeEvent::Notice(format!(
+                        "{err}. Press Enter to try again."
+                    )));
                     return;
                 }
                 // Scoped so the edit (and its subscription) is gone before the focus
@@ -582,7 +584,7 @@ impl FileTree {
                     )),
                 )
                 .child(
-                    toolbar_button("tree-collapse", "Collapse", colors).on_click(cx.listener(
+                    toolbar_button("tree-collapse", "Collapse All", colors).on_click(cx.listener(
                         |this, _: &ClickEvent, window, cx| this.collapse_all(window, cx),
                     )),
                 )

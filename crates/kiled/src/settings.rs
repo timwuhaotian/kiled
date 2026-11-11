@@ -72,17 +72,25 @@ impl Settings {
         let defaults = Self::default();
         let font_size = match file.font_size {
             Some(size) if (6.0..=72.0).contains(&size) => px(size),
-            Some(size) => return Err(format!("font_size {size} is outside 6–72")),
+            Some(size) => {
+                return Err(format!("font_size must be between 6 and 72 (found {size})"));
+            }
             None => defaults.font_size,
         };
         let tab_size = match file.tab_size {
             Some(size) if (1..=16).contains(&size) => size,
-            Some(size) => return Err(format!("tab_size {size} is outside 1–16")),
+            Some(size) => {
+                return Err(format!("tab_size must be between 1 and 16 (found {size})"));
+            }
             None => defaults.tab_size,
         };
         let sidebar_opacity = match file.sidebar_opacity {
             Some(opacity) if (0.0..=1.0).contains(&opacity) => Some(opacity),
-            Some(opacity) => return Err(format!("sidebar_opacity {opacity} is outside 0–1")),
+            Some(opacity) => {
+                return Err(format!(
+                    "sidebar_opacity must be between 0 and 1 (found {opacity})"
+                ));
+            }
             None => None,
         };
         Ok(Self {
@@ -224,8 +232,18 @@ mod tests {
     #[test]
     fn parse_should_reject_unknown_keys_and_absurd_values() {
         assert!(Settings::parse("fontsize = 15.0").is_err());
-        assert!(Settings::parse("font_size = 400.0").is_err());
-        assert!(Settings::parse("tab_size = 0").is_err());
+        assert_eq!(
+            Settings::parse("font_size = 400.0").unwrap_err(),
+            "font_size must be between 6 and 72 (found 400)"
+        );
+        assert_eq!(
+            Settings::parse("tab_size = 0").unwrap_err(),
+            "tab_size must be between 1 and 16 (found 0)"
+        );
+        assert_eq!(
+            Settings::parse("sidebar_opacity = 2.0").unwrap_err(),
+            "sidebar_opacity must be between 0 and 1 (found 2)"
+        );
     }
 
     #[test]

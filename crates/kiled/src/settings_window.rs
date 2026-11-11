@@ -135,7 +135,7 @@ impl SettingsWindow {
             return;
         };
         match text.trim() {
-            "" => self.error = Some("Font family can't be empty.".into()),
+            "" => self.error = Some("Enter a font family name.".into()),
             family => self.write("font_family", &family.into(), cx),
         }
         let shown = self.file.font_family.clone();
@@ -213,7 +213,12 @@ impl SettingsWindow {
         match taken {
             Some(taken) => {
                 self.error = Some(
-                    format!("{} is already {}.", keymap::display(&keys), taken.title()).into(),
+                    format!(
+                        "{} is already assigned to {}. Choose another shortcut.",
+                        keymap::display(&keys),
+                        taken.title()
+                    )
+                    .into(),
                 );
                 cx.notify();
             }
@@ -253,13 +258,15 @@ impl SettingsWindow {
             config::keymap_file()
         } else {
             crate::settings::config_dir()
-                .ok_or_else(|| "no home directory".to_owned())
+                .ok_or_else(|| {
+                    "Can't determine the config folder because HOME is not set.".to_owned()
+                })
                 .and_then(|dir| {
                     let path = dir.join(name);
                     if !path.exists() {
                         std::fs::create_dir_all(&dir)
                             .and_then(|()| std::fs::write(&path, ""))
-                            .map_err(|err| format!("{name}: {err}"))?;
+                            .map_err(|err| format!("Can't create {name}: {err}"))?;
                     }
                     Ok(path)
                 })
@@ -485,8 +492,8 @@ fn key_row(
         .text_size(px(12.))
         .text_color(if changed { c.accent } else { c.text })
         .child(match (shown.as_slice(), listening) {
-            (_, true) => "Press keys…".to_owned(),
-            ([], false) => "None".to_owned(),
+            (_, true) => "Press shortcut…".to_owned(),
+            ([], false) => "Not assigned".to_owned(),
             (shown, false) => shown.join(", "),
         })
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.record(command, cx)));
@@ -587,8 +594,8 @@ impl SettingsWindow {
         let focused = self.font_family.focus_handle(cx).is_focused(window);
         vec![
             row(
-                "Family",
-                Some("A monospace font"),
+                "Font family",
+                Some("Monospace font recommended"),
                 c,
                 div()
                     .w(px(180.))
@@ -603,7 +610,7 @@ impl SettingsWindow {
                     .child(self.font_family.clone()),
             ),
             row(
-                "Size",
+                "Font size",
                 Some("⌘= and ⌘- zoom without saving"),
                 c,
                 stepper(
@@ -621,7 +628,7 @@ impl SettingsWindow {
         vec![
             row(
                 "Tab size",
-                Some("For files that don't show their own"),
+                Some("Used when file indentation isn't detected"),
                 c,
                 stepper(
                     "tab-size",
@@ -703,7 +710,7 @@ impl SettingsWindow {
         vec![
             row(
                 "config.toml",
-                Some("These settings, and [servers] for language servers"),
+                Some("Settings and [servers] overrides"),
                 c,
                 button("edit-config", "Edit", c).on_click(
                     cx.listener(|this, _: &ClickEvent, _, cx| this.edit_file("config.toml", cx)),
@@ -711,14 +718,14 @@ impl SettingsWindow {
             ),
             row(
                 "keymap.toml",
-                Some("Every key, including two-stroke ones"),
+                Some("Key bindings, including two-stroke shortcuts"),
                 c,
                 button("edit-keymap", "Edit", c).on_click(
                     cx.listener(|this, _: &ClickEvent, _, cx| this.edit_file("keymap.toml", cx)),
                 ),
             ),
             row(
-                "Folder",
+                "Config folder",
                 Some("~/.config/kiled"),
                 c,
                 button("open-folder", "Show in Finder", c).on_click(cx.listener(
@@ -799,7 +806,7 @@ impl Render for SettingsWindow {
                             .px_1()
                             .text_size(px(11.))
                             .text_color(c.muted)
-                            .child("KEYBOARD — VS Code's keys by default. Click a shortcut and press new keys."),
+                            .child("KEYBOARD — VS Code's keys by default. Click a shortcut, then press a new one; click again to cancel."),
                     )
                     .children(keyboard),
             )
@@ -875,7 +882,11 @@ mod tests {
         cx.simulate_keystrokes(settings.into(), "cmd-s");
         settings
             .update(cx, |this, _, _| {
-                assert_eq!((this.recording, this.error.is_some()), (None, true));
+                assert_eq!(this.recording, None);
+                assert_eq!(
+                    this.error.clone(),
+                    Some("⌘S is already assigned to Save. Choose another shortcut.".into())
+                );
             })
             .unwrap();
     }

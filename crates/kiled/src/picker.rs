@@ -485,7 +485,10 @@ impl Render for Picker {
                     Mode::Files if self.files.listing && self.files.project.is_empty() => {
                         "Listing the folder's files…"
                     }
-                    _ => "No matching results",
+                    Mode::Files if query.is_empty() => "No files in this folder",
+                    Mode::Files => "No matching files",
+                    Mode::Commands => "No matching commands",
+                    Mode::Line => "Type a line number",
                 })
                 .into_any_element()
         } else {

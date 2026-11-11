@@ -336,8 +336,7 @@ pub const TEMPLATE: &str = r#"# Kiled key bindings. The defaults are VS Code's o
 # command with its keys, and records new ones.
 #
 # Keys: cmd, ctrl, alt, shift and a key, joined with "-" ("cmd-shift-p"); "cmd-k cmd-w" is
-# two strokes. Commands are named as Settings ▸ Keyboard shows them, in snake_case
-# ("go_to_line", "toggle_line_comment").
+# two strokes. Command names use snake_case ("go_to_line", "toggle_line_comment").
 
 [bindings]
 # Examples:
@@ -383,7 +382,9 @@ pub fn resolve(user: Option<&str>) -> (Vec<(String, Command)>, Vec<KeymapError>)
         let Some(command) = Command::parse(&name) else {
             errors.push(KeymapError {
                 key: keys,
-                reason: format!("unknown command \"{name}\""),
+                reason: format!(
+                    "unknown command \"{name}\"; expected a command name or \"unbind\""
+                ),
             });
             continue;
         };
@@ -423,7 +424,7 @@ fn normalize(keys: &str) -> Result<String, String> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     if strokes.is_empty() {
-        return Err("empty key".into());
+        return Err("shortcut cannot be empty".into());
     }
     Ok(strokes.join(" "))
 }
@@ -671,9 +672,13 @@ mod tests {
             "[bindings]\n\"cmd-x\" = \"cutt\"\n\"cmd-y\" = \"save\"\n",
         ));
         assert_eq!(
-            (errors.len(), command_for(&table, "cmd-y")),
-            (1, Some(Command::Save))
+            errors,
+            vec![KeymapError {
+                key: "cmd-x".into(),
+                reason: "unknown command \"cutt\"; expected a command name or \"unbind\"".into(),
+            }]
         );
+        assert_eq!(command_for(&table, "cmd-y"), Some(Command::Save));
     }
 
     #[test]

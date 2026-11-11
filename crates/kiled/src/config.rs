@@ -56,7 +56,7 @@ fn read_path(path: &Path) -> io::Result<Option<String>> {
 fn load(name: &str) -> Result<Option<String>, String> {
     file(name)
         .map_or(Ok(None), |path| read_path(&path))
-        .map_err(|err| format!("{name}: {err}"))
+        .map_err(|err| format!("Can't read {name}: {err}"))
 }
 
 /// Reads `name`, reporting a failure as a notice.
@@ -73,7 +73,7 @@ fn read(name: &str, notices: &mut Vec<SharedString>) -> Option<String> {
 /// If the file can't be read or doesn't parse.
 pub fn read_settings() -> Result<Settings, String> {
     match load("config.toml")? {
-        Some(text) => Settings::parse(&text).map_err(|err| format!("config.toml: {err}")),
+        Some(text) => Settings::parse(&text).map_err(|err| format!("Invalid config.toml: {err}")),
         None => Ok(Settings::default()),
     }
 }
@@ -84,9 +84,10 @@ pub fn read_settings() -> Result<Settings, String> {
 /// # Errors
 /// If the file can't be read or written, or the new value is invalid.
 pub fn write_setting(key: &str, value: &toml::Value) -> Result<Settings, String> {
-    let path = file("config.toml").ok_or("config.toml: no home directory")?;
+    let path =
+        file("config.toml").ok_or("Can't determine the config folder because HOME is not set.")?;
     edit_settings_at(&path, |text| settings::set_key(text, key, value))
-        .map_err(|err| format!("config.toml: {err}"))
+        .map_err(|err| format!("Can't update config.toml: {err}"))
 }
 
 /// Removes `key` from `config.toml`, so its default applies again.
@@ -94,9 +95,10 @@ pub fn write_setting(key: &str, value: &toml::Value) -> Result<Settings, String>
 /// # Errors
 /// If the file can't be read or written.
 pub fn unset_setting(key: &str) -> Result<Settings, String> {
-    let path = file("config.toml").ok_or("config.toml: no home directory")?;
+    let path =
+        file("config.toml").ok_or("Can't determine the config folder because HOME is not set.")?;
     edit_settings_at(&path, |text| settings::unset_key(text, key))
-        .map_err(|err| format!("config.toml: {err}"))
+        .map_err(|err| format!("Can't update config.toml: {err}"))
 }
 
 fn edit_settings_at(path: &Path, edit: impl FnOnce(&str) -> String) -> Result<Settings, String> {
@@ -117,7 +119,7 @@ pub fn apply(cx: &mut App) -> Vec<SharedString> {
     let mut notices = Vec::new();
     match read("config.toml", &mut notices).map(|text| Settings::parse(&text)) {
         Some(Ok(settings)) => cx.set_global(settings),
-        Some(Err(err)) => notices.push(format!("config.toml: {err}").into()),
+        Some(Err(err)) => notices.push(format!("Invalid config.toml: {err}").into()),
         None => cx.set_global(Settings::default()),
     }
     if !cx.has_global::<Settings>() {
@@ -127,11 +129,19 @@ pub fn apply(cx: &mut App) -> Vec<SharedString> {
     cx.set_global(Theme::named(settings.theme).with_sidebar_opacity(settings.sidebar_opacity));
     let user_keymap = read("keymap.toml", &mut notices);
     let (table, errors) = keymap::resolve(user_keymap.as_deref());
-    notices.extend(
-        errors
-            .into_iter()
-            .map(|err| SharedString::from(format!("keymap.toml: {}: {}", err.key, err.reason))),
-    );
+    notices.extend(errors.into_iter().map(|err| {
+        if err.key == "keymap.toml" {
+            SharedString::from(format!(
+                "Invalid keymap.toml: {}. Using default shortcuts.",
+                err.reason
+            ))
+        } else {
+            SharedString::from(format!(
+                "Skipped keymap.toml binding {}: {}. Fix or remove the entry.",
+                err.key, err.reason
+            ))
+        }
+    }));
     cx.clear_key_bindings();
     // The fixed keys of lists and fields go last: within one context they win.
     cx.bind_keys(
@@ -162,8 +172,9 @@ pub fn read_keymap() -> Result<Option<String>, String> {
 /// # Errors
 /// If the file can't be created or written.
 pub fn update_keymap(edit: impl FnOnce(&str) -> String) -> Result<(), String> {
-    let path = file("keymap.toml").ok_or("keymap.toml: no home directory")?;
-    update_keymap_at(&path, edit).map_err(|err| format!("keymap.toml: {err}"))
+    let path =
+        file("keymap.toml").ok_or("Can't determine the config folder because HOME is not set.")?;
+    update_keymap_at(&path, edit).map_err(|err| format!("Can't update keymap.toml: {err}"))
 }
 
 fn update_keymap_at(path: &Path, edit: impl FnOnce(&str) -> String) -> io::Result<()> {
@@ -180,12 +191,13 @@ fn update_keymap_at(path: &Path, edit: impl FnOnce(&str) -> String) -> io::Resul
 /// # Errors
 /// If the file can't be written.
 pub fn keymap_file() -> Result<PathBuf, String> {
-    let path = file("keymap.toml").ok_or("keymap.toml: no home directory")?;
+    let path =
+        file("keymap.toml").ok_or("Can't determine the config folder because HOME is not set.")?;
     if !path.exists() {
         path.parent()
             .map_or(Ok(()), fs::create_dir_all)
             .and_then(|()| fs::write(&path, keymap::TEMPLATE))
-            .map_err(|err| format!("keymap.toml: {err}"))?;
+            .map_err(|err| format!("Can't create keymap.toml: {err}"))?;
     }
     Ok(path)
 }
@@ -195,12 +207,13 @@ pub fn keymap_file() -> Result<PathBuf, String> {
 /// # Errors
 /// If the folder can't be created.
 pub fn reveal_folder(cx: &App) -> Result<(), String> {
-    let dir = config_dir().ok_or("no home directory")?;
-    fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+    let dir = config_dir().ok_or("Can't determine the config folder because HOME is not set.")?;
+    fs::create_dir_all(&dir)
+        .map_err(|err| format!("Can't create config folder {}: {err}", dir.display()))?;
     let mut open = Command::new("/usr/bin/open")
         .arg(&dir)
         .spawn()
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| format!("Can't show config folder in Finder: {err}"))?;
     cx.background_spawn(async move {
         let _ = open.wait();
     })

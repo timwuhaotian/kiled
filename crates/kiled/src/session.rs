@@ -125,11 +125,17 @@ impl Store {
     /// If the file exists but can't be read or parsed; the message says which.
     pub fn load(&self) -> Result<Option<Session>, String> {
         match fs::read_to_string(&self.file) {
-            Ok(text) => toml::from_str(&text)
-                .map(Some)
-                .map_err(|err| format!("{}: {err}", self.file.display())),
+            Ok(text) => toml::from_str(&text).map(Some).map_err(|err| {
+                format!(
+                    "Can't restore the last session from {}: {err}. Kiled will start a new session.",
+                    self.file.display()
+                )
+            }),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(format!("{}: {err}", self.file.display())),
+            Err(err) => Err(format!(
+                "Can't restore the last session from {}: {err}. Check that the file is readable; Kiled will start a new session.",
+                self.file.display()
+            )),
         }
     }
 
