@@ -3,10 +3,7 @@
 //! Enter with nothing typed goes back to the previous one. A path starting with `~` or `/`
 //! opens any file on the Mac, after `>` too.
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::PathBuf, sync::Arc};
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
@@ -329,7 +326,10 @@ impl Picker {
         self.confirm(cx);
     }
 
-    fn rows(&self, mode: Mode) -> Vec<(SharedString, SharedString, Vec<usize>)> {
+    /// Each row: its title, its detail, and the matched chars in each. A file's
+    /// detail is its folder as a path (`src/`, `~/code/`), so a query matching the
+    /// folder shows there as well as in the name.
+    fn rows(&self, mode: Mode) -> Vec<(SharedString, SharedString, Vec<usize>, Vec<usize>)> {
         if mode == Mode::Path {
             return self
                 .found
@@ -340,7 +340,12 @@ impl Picker {
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_default();
                     let folder = path.parent().map(settings::abbreviate_home);
-                    (name.into(), folder.unwrap_or_default().into(), Vec::new())
+                    (
+                        name.into(),
+                        folder.unwrap_or_default().into(),
+                        Vec::new(),
+                        Vec::new(),
+                    )
                 })
                 .collect();
         }
@@ -352,33 +357,58 @@ impl Picker {
                         .candidate(*index)
                         .map(|path| path.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    // The name first, its folder after it, dimmed; one outside the open
-                    // folder is absolute, shown as `~` shortens it.
-                    let split = path.rfind('/').map_or(0, |slash| slash + 1);
-                    let name_start = path[..split].chars().count();
-                    let name_positions = positions
-                        .iter()
-                        .filter_map(|at| at.checked_sub(name_start))
-                        .collect();
-                    let folder = path[..split].trim_end_matches('/');
-                    let folder = if path.starts_with('/') {
-                        settings::abbreviate_home(Path::new(folder))
-                    } else {
-                        folder.to_owned()
-                    };
-                    (
-                        path[split..].to_owned().into(),
-                        folder.into(),
-                        name_positions,
-                    )
+                    let (name, name_marks, folder, folder_marks) = split_path(&path, positions);
+                    (name.into(), folder.into(), name_marks, folder_marks)
                 }
                 Mode::Commands | Mode::Line | Mode::Path => {
                     let (command, keys) = &self.commands[*index];
-                    (command.title().into(), keys.clone(), positions.clone())
+                    (
+                        command.title().into(),
+                        keys.clone(),
+                        positions.clone(),
+                        Vec::new(),
+                    )
                 }
             })
             .collect()
     }
+}
+
+/// A path split into its name and its folder, each with the matched char indices
+/// into it: the folder as a path (`src/`, `~/code/`), so a query matching the
+/// folder shows there too, not just in the name.
+fn split_path(path: &str, positions: &[usize]) -> (String, Vec<usize>, String, Vec<usize>) {
+    let split = path.rfind('/').map_or(0, |slash| slash + 1);
+    let name_start = path[..split].chars().count();
+    let name_marks = positions
+        .iter()
+        .filter_map(|at| at.checked_sub(name_start))
+        .collect();
+    let folder: Vec<char> = path[..split].chars().collect();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let home_len = home.chars().count();
+    let under_home = !home.is_empty()
+        && home_len <= folder.len()
+        && folder[..home_len] == home.chars().collect::<Vec<_>>()
+        && (folder.len() == home_len || folder[home_len] == '/');
+    let (hint, home_len) = if under_home {
+        let mut hint = String::from("~");
+        hint.extend(&folder[home_len..]);
+        (hint, Some(home_len))
+    } else {
+        (folder.into_iter().collect(), None)
+    };
+    let folder_marks = positions
+        .iter()
+        .filter_map(|&at| {
+            if at >= name_start {
+                return None;
+            }
+            // `~` stands for the home prefix; chars inside it carry no mark.
+            home_len.map_or(Some(at), |home| at.checked_sub(home).map(|at| at + 1))
+        })
+        .collect();
+    (path[split..].to_owned(), name_marks, hint, folder_marks)
 }
 
 /// Project files that are among the recent, by index, sorted.
@@ -500,12 +530,12 @@ impl Render for Picker {
             uniform_list("picker-rows", count, move |range, _, _| {
                 range
                     .map(|index| {
-                        let (title, detail, positions) = rows[index].clone();
-                        let picker = picker.clone();
-                        row(index, &title, detail, &positions, index == selected, colors).on_click(
-                            move |_: &ClickEvent, _, cx| {
-                                picker.update(cx, |picker, cx| picker.choose(index, cx));
-                            },
+                        row_element(
+                            index,
+                            &rows[index],
+                            index == selected,
+                            colors,
+                            picker.clone(),
                         )
                     })
                     .collect()
@@ -549,28 +579,40 @@ impl Render for Picker {
     }
 }
 
+/// One list row, opening itself when clicked.
+fn row_element(
+    index: usize,
+    data: &(SharedString, SharedString, Vec<usize>, Vec<usize>),
+    selected: bool,
+    colors: Colors,
+    picker: Entity<Picker>,
+) -> gpui::Stateful<gpui::Div> {
+    let (title, detail, positions, detail_positions) = data.clone();
+    row(
+        index,
+        &title,
+        &positions,
+        &detail,
+        &detail_positions,
+        selected,
+        colors,
+    )
+    .on_click(move |_: &ClickEvent, _, cx| {
+        picker.update(cx, |picker, cx| picker.choose(index, cx));
+    })
+}
+
 fn row(
     index: usize,
     title: &str,
-    detail: SharedString,
     positions: &[usize],
+    detail: &str,
+    detail_positions: &[usize],
     selected: bool,
     colors: Colors,
 ) -> gpui::Stateful<gpui::Div> {
-    let mut pieces: Vec<AnyElement> = Vec::new();
-    let mut run = String::new();
-    let mut run_matched = false;
-    for (at, ch) in title.chars().enumerate() {
-        let matched = positions.contains(&at);
-        if matched != run_matched && !run.is_empty() {
-            pieces.push(piece(std::mem::take(&mut run), run_matched, colors));
-        }
-        run_matched = matched;
-        run.push(ch);
-    }
-    if !run.is_empty() {
-        pieces.push(piece(run, run_matched, colors));
-    }
+    // The best match, the selected row, carries its folder in full; the rest are dimmed.
+    let detail_base = if selected { colors.text } else { colors.muted };
     div()
         .id(index)
         .w_full()
@@ -582,21 +624,45 @@ fn row(
         .rounded_md()
         .cursor_pointer()
         .when(selected, |row| row.bg(colors.selected))
-        .child(div().flex().flex_none().children(pieces))
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .children(marked(title, positions, colors.text, colors)),
+        )
         .child(
             div()
                 .flex_1()
                 .min_w_0()
-                .truncate()
+                .flex()
+                .overflow_hidden()
                 .text_size(px(12.))
-                .text_color(colors.muted)
-                .child(detail),
+                .children(marked(detail, detail_positions, detail_base, colors)),
         )
 }
 
-fn piece(text: String, matched: bool, colors: Colors) -> AnyElement {
+/// A text split into runs at the matched chars, the matched in the accent color.
+fn marked(text: &str, positions: &[usize], base: Hsla, colors: Colors) -> Vec<AnyElement> {
+    let mut pieces: Vec<AnyElement> = Vec::new();
+    let mut run = String::new();
+    let mut run_matched = false;
+    for (at, ch) in text.chars().enumerate() {
+        let matched = positions.contains(&at);
+        if matched != run_matched && !run.is_empty() {
+            pieces.push(piece(std::mem::take(&mut run), run_matched, base, colors));
+        }
+        run_matched = matched;
+        run.push(ch);
+    }
+    if !run.is_empty() {
+        pieces.push(piece(run, run_matched, base, colors));
+    }
+    pieces
+}
+
+fn piece(text: String, matched: bool, base: Hsla, colors: Colors) -> AnyElement {
     div()
-        .text_color(if matched { colors.accent } else { colors.text })
+        .text_color(if matched { colors.accent } else { base })
         .child(text)
         .into_any_element()
 }
@@ -693,6 +759,42 @@ mod tests {
         assert_eq!(
             [parse_line("12"), parse_line("12:5"), parse_line("x")],
             [Some((12, None)), Some((12, Some(5))), None]
+        );
+    }
+
+    #[test]
+    fn a_path_should_split_its_name_and_folder_marks() {
+        // `srcpick` against `crates/kiled/src/picker.rs`: `src` in the folder, `pick`
+        // in the name, each marked where it matched.
+        let (name, name_marks, folder, folder_marks) =
+            split_path("crates/kiled/src/picker.rs", &[13, 14, 15, 17, 18, 19, 20]);
+        assert_eq!(
+            (name, name_marks, folder, folder_marks),
+            (
+                "picker.rs".to_owned(),
+                vec![0, 1, 2, 3],
+                "crates/kiled/src/".to_owned(),
+                vec![13, 14, 15]
+            )
+        );
+    }
+
+    #[test]
+    fn a_home_path_should_show_tilde_and_keep_its_marks() {
+        let home = std::env::var("HOME").unwrap();
+        let at = home.chars().count();
+        let path = format!("{home}/code/main.rs");
+        // `codem`: `code` in the folder, `m` in the name.
+        let (name, name_marks, folder, folder_marks) =
+            split_path(&path, &[at + 1, at + 2, at + 3, at + 4, at + 6]);
+        assert_eq!(
+            (name, name_marks, folder, folder_marks),
+            (
+                "main.rs".to_owned(),
+                vec![0],
+                "~/code/".to_owned(),
+                vec![2, 3, 4, 5]
+            )
         );
     }
 }

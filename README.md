@@ -68,7 +68,9 @@ and 28 MB.</sub>
   yaml-language-server and taplo — whichever you have installed — and tells you how to
   install one it can't find.
 - **Find and replace** in the file, with case, whole word and regex; **Go to File** by fuzzy
-  name, the files you opened lately first, or any file on the Mac by its path (`~/.npmrc`);
+  name or folder, each result showing its folder as a path (`src/`, `~/code/`) with the
+  matched chars lit in it, the files you opened lately first, or any file on the Mac by
+  its path (`~/.npmrc`);
   the **Command Palette**, **Go to Line**, and Back and Forward across jumps.
 - **The explorer manages files**: New File and New Folder named in place (a new file opens
   at once), F2 to rename, ⌘⌫ to move to the Trash. Renames take their open tabs with them,

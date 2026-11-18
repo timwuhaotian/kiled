@@ -6,6 +6,12 @@ versions below are how we track releases, and match `Cargo.toml` and the app's I
 
 ## Unreleased
 
+## 0.0.11 — 2026-11-18
+
+- Go to File (⌘P) now lights the folder path too: each result shows its folder as a path
+  (`src/`, `~/code/`) with the matched chars highlighted in it as you type, so a query
+  matching the folder shows where it matched, and the best match's path stays in full.
+
 ## 0.0.10 — 2026-11-11
 
 - **Clearer interface copy.** Buttons, empty states, settings and shortcut recording use
