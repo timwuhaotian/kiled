@@ -1,9 +1,13 @@
 //! The Quick Open box, as VS Code has it: files (Cmd-P), commands after `>` (Cmd-Shift-P)
 //! and a line after `:` (Ctrl-G) (DESIGN.md §7). The files opened lately come first, so
 //! Enter with nothing typed goes back to the previous one. A path starting with `~` or `/`
-//! opens any file on the Mac, after `>` too.
+//! lists what starts like it as you type, so it can be completed step by step, and opens
+//! any file on the Mac, after `>` too.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
@@ -112,6 +116,71 @@ fn file_at(text: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// Entries listed at once in path completion; a folder rarely holds more worth typing.
+const PATH_LIMIT: usize = 50;
+
+/// A typed path split into the folder to list, the unfinished name in it, and the
+/// folder as typed, to complete a chosen entry in the same form (`~/.killi`).
+fn path_split(text: &str) -> (PathBuf, String, String) {
+    if text == "~" {
+        return (settings::expand_home("~"), String::new(), "~".to_owned());
+    }
+    if let Some(at) = text.rfind('/') {
+        let typed = &text[..at];
+        let dir = if typed.is_empty() {
+            if text.starts_with('/') {
+                PathBuf::from("/")
+            } else {
+                settings::expand_home("~")
+            }
+        } else {
+            settings::expand_home(typed)
+        };
+        (dir, text[at + 1..].to_owned(), typed.to_owned())
+    } else {
+        let dir = if text.starts_with('~') {
+            settings::expand_home("~")
+        } else {
+            PathBuf::from("/")
+        };
+        (dir, text.to_owned(), String::new())
+    }
+}
+
+/// Entries of `dir` whose name starts with `partial` (case ignored), by name, each
+/// with the chars the partial covers; an empty partial lists the folder whole.
+fn path_entries(dir: &Path, partial: &str) -> Vec<(PathBuf, Vec<usize>)> {
+    let want = partial.to_lowercase();
+    let mut found: Vec<(PathBuf, Vec<usize>)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            name.to_lowercase().starts_with(&want).then(|| {
+                let marks = (0..partial.chars().count())
+                    .filter(|at| *at < name.chars().count())
+                    .collect();
+                (path, marks)
+            })
+        })
+        .collect();
+    found.sort_by(|a, b| {
+        a.0.file_name()
+            .map(|name| name.to_string_lossy().to_lowercase())
+            .cmp(
+                &b.0.file_name()
+                    .map(|name| name.to_string_lossy().to_lowercase()),
+            )
+    });
+    found.truncate(PATH_LIMIT);
+    found
+}
+
 /// `12` or `12:5` as a line and column.
 fn parse_line(text: &str) -> Option<(usize, Option<usize>)> {
     let mut parts = text.splitn(2, [':', ',']);
@@ -129,10 +198,13 @@ pub struct Picker {
     /// Lines in the active editor, for Go to Line's hint.
     lines: usize,
     /// Matches as indices into the recent files and then the project's, or into the
-    /// commands, with the matched chars.
+    /// commands, or (in path mode) into `path_entries`, with the matched chars.
     matches: Vec<(usize, Vec<usize>)>,
     /// The file a typed path names.
     found: Option<PathBuf>,
+    /// Entries under the folder a typed path is in, as they are typed: the path,
+    /// the matched chars in its name, the text completing it, and whether a folder.
+    path_entries: Vec<(PathBuf, Vec<usize>, String, bool)>,
     selected: usize,
     scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
@@ -180,6 +252,7 @@ impl Picker {
             lines,
             matches: Vec::new(),
             found: None,
+            path_entries: Vec::new(),
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
@@ -275,6 +348,37 @@ impl Picker {
         } else {
             None
         };
+        if mode == Mode::Path {
+            self.path_entries = if self.found.is_some() {
+                Vec::new()
+            } else {
+                let (dir, partial, typed) = path_split(query);
+                path_entries(&dir, &partial)
+                    .into_iter()
+                    .map(|(path, marks)| {
+                        let name = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let is_dir = path.is_dir();
+                        let done = if is_dir {
+                            format!("{typed}/{name}/")
+                        } else {
+                            format!("{typed}/{name}")
+                        };
+                        (path, marks, done, is_dir)
+                    })
+                    .collect()
+            };
+            self.matches = self
+                .path_entries
+                .iter()
+                .enumerate()
+                .map(|(index, _)| (index, Vec::new()))
+                .collect();
+        } else {
+            self.path_entries.clear();
+        }
         self.selected = 0;
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
@@ -309,7 +413,30 @@ impl Picker {
                 .get(self.selected)
                 .and_then(|(index, _)| self.candidate(*index))
                 .map(|path| PickerEvent::Open(path.clone())),
-            Mode::Path => self.found.clone().map(PickerEvent::Open),
+            Mode::Path => {
+                if let Some(found) = self.found.clone() {
+                    Some(PickerEvent::Open(found))
+                } else if let Some((path, _, done, is_dir)) = self
+                    .matches
+                    .get(self.selected)
+                    .and_then(|(index, _)| self.path_entries.get(*index))
+                    .cloned()
+                {
+                    if is_dir {
+                        // A folder completes as typed, and the listing narrows to it.
+                        let done = format!("{}{}", prefix_of(&text), done);
+                        self.query.update(cx, |field, cx| {
+                            field.set_text("", cx);
+                            field.type_text(&done, cx);
+                        });
+                        None
+                    } else {
+                        Some(PickerEvent::Open(path))
+                    }
+                } else {
+                    None
+                }
+            }
             Mode::Commands => self
                 .matches
                 .get(self.selected)
@@ -331,21 +458,41 @@ impl Picker {
     /// folder shows there as well as in the name.
     fn rows(&self, mode: Mode) -> Vec<(SharedString, SharedString, Vec<usize>, Vec<usize>)> {
         if mode == Mode::Path {
+            if let Some(path) = &self.found {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let folder = path.parent().map(settings::abbreviate_home);
+                return vec![(
+                    name.into(),
+                    folder.unwrap_or_default().into(),
+                    Vec::new(),
+                    Vec::new(),
+                )];
+            }
             return self
-                .found
+                .matches
                 .iter()
-                .map(|path| {
-                    let name = path
+                .map(|(index, _)| {
+                    let (path, marks, _, is_dir) = &self.path_entries[*index];
+                    let mut name = path
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    let folder = path.parent().map(settings::abbreviate_home);
-                    (
-                        name.into(),
-                        folder.unwrap_or_default().into(),
-                        Vec::new(),
-                        Vec::new(),
-                    )
+                    if *is_dir {
+                        name.push('/');
+                    }
+                    let folder = path
+                        .parent()
+                        .map(settings::abbreviate_home)
+                        .unwrap_or_default();
+                    let folder = if folder.ends_with('/') {
+                        folder
+                    } else {
+                        format!("{folder}/")
+                    };
+                    (name.into(), folder.into(), marks.clone(), Vec::new())
                 })
                 .collect();
         }
@@ -508,7 +655,7 @@ impl Render for Picker {
                 .py_2()
                 .text_color(colors.muted)
                 .child(match mode {
-                    Mode::Path => "No file at this path",
+                    Mode::Path => "Nothing at this path",
                     Mode::Files if !self.files.folder => {
                         "Open a folder to search its files, or type a path like ~/.zshrc"
                     }
@@ -777,6 +924,67 @@ mod tests {
                 vec![13, 14, 15]
             )
         );
+    }
+
+    #[test]
+    fn a_typed_path_should_split_into_folder_and_name() {
+        let home = settings::expand_home("~");
+        assert_eq!(
+            [
+                path_split("~/.ki"),
+                path_split("/etc/ho"),
+                path_split("~/.killi/"),
+                path_split("/"),
+            ],
+            [
+                (home.clone(), ".ki".to_owned(), "~".to_owned()),
+                (PathBuf::from("/etc"), "ho".to_owned(), "/etc".to_owned()),
+                (home.join(".killi"), String::new(), "~/.killi".to_owned()),
+                (PathBuf::from("/"), String::new(), String::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn path_entries_should_list_what_a_prefix_names() {
+        let dir = std::env::temp_dir().join(format!("kiled-path-entries-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".killi")).unwrap();
+        std::fs::write(dir.join(".killi/config.toml"), "").unwrap();
+        std::fs::write(dir.join("notes.txt"), "").unwrap();
+        std::fs::write(dir.join(".hidden"), "").unwrap();
+        let names = |dir: &Path, partial: &str| -> Vec<String> {
+            path_entries(dir, partial)
+                .into_iter()
+                .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect()
+        };
+        let entries = path_entries(&dir, ".ki");
+        assert_eq!(
+            [
+                names(&dir, ".ki"),
+                names(&dir, ""),
+                names(&dir, "NOT"),
+                names(&dir, "zzz"),
+                names(&dir.join(".killi"), "con"),
+            ],
+            [
+                vec![".killi".to_owned()],
+                vec![
+                    ".hidden".to_owned(),
+                    ".killi".to_owned(),
+                    "notes.txt".to_owned()
+                ],
+                vec!["notes.txt".to_owned()],
+                Vec::new(),
+                vec!["config.toml".to_owned()],
+            ]
+        );
+        assert_eq!(
+            entries.first().map(|(_, marks)| marks.clone()),
+            Some(vec![0, 1, 2])
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

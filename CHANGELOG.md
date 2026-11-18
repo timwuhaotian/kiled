@@ -6,6 +6,11 @@ versions below are how we track releases, and match `Cargo.toml` and the app's I
 
 ## Unreleased
 
+## 0.0.12 — 2026-11-18
+
+- A typed path in Go to File (⌘P, or after ⇧⌘P's `>`) now completes step by step: typing
+  `~/.ki` lists `.killi`, and confirming a folder fills it in (`~/.killi/`) and lists what
+  is in it, instead of waiting for the whole path of a file.
 ## 0.0.11 — 2026-11-18
 
 - Go to File (⌘P) now lights the folder path too: each result shows its folder as a path

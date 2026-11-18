@@ -2748,6 +2748,36 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_partial_path_should_offer_the_file_under_it(cx: &mut TestAppContext) {
+        let dir = scratch("partial-path");
+        let (workspace, cx) = workspace(Launch::default(), cx);
+        cx.simulate_keystrokes("cmd-p");
+        cx.simulate_input(&format!("{}/src/mai", dir.display()));
+        cx.simulate_keystrokes("enter");
+        let opened = workspace.read_with(cx, |this, cx| {
+            this.active_editor()
+                .and_then(|editor| editor.read(cx).path().map(Path::to_owned))
+        });
+        assert_eq!(opened, Some(dir.join("src/main.rs")));
+    }
+
+    #[gpui::test]
+    fn a_partial_path_should_complete_a_folder_then_offer_its_files(cx: &mut TestAppContext) {
+        let dir = scratch("partial-folder");
+        let (workspace, cx) = workspace(Launch::default(), cx);
+        cx.simulate_keystrokes("cmd-p");
+        cx.simulate_input(&format!("{}/sr", dir.display()));
+        cx.simulate_keystrokes("enter");
+        cx.simulate_input("mai");
+        cx.simulate_keystrokes("enter");
+        let opened = workspace.read_with(cx, |this, cx| {
+            this.active_editor()
+                .and_then(|editor| editor.read(cx).path().map(Path::to_owned))
+        });
+        assert_eq!(opened, Some(dir.join("src/main.rs")));
+    }
+
+    #[gpui::test]
     fn a_tab_should_show_its_path_under_the_pointer(cx: &mut TestAppContext) {
         let dir = scratch("tab-tooltip");
         let (_, cx) = workspace(
