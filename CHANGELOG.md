@@ -6,6 +6,11 @@ versions below are how we track releases, and match `Cargo.toml` and the app's I
 
 ## Unreleased
 
+## 0.0.13 — 2026-11-18
+
+- Path completion in Go to File now matches fuzzily, not by prefix: `kli` lists `.killi`
+  and `nt` lists `notes.txt`, best matches first.
+
 ## 0.0.12 — 2026-11-18
 
 - A typed path in Go to File (⌘P, or after ⇧⌘P's `>`) now completes step by step: typing

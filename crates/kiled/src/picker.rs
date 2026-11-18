@@ -1,7 +1,7 @@
 //! The Quick Open box, as VS Code has it: files (Cmd-P), commands after `>` (Cmd-Shift-P)
 //! and a line after `:` (Ctrl-G) (DESIGN.md §7). The files opened lately come first, so
 //! Enter with nothing typed goes back to the previous one. A path starting with `~` or `/`
-//! lists what starts like it as you type, so it can be completed step by step, and opens
+//! lists what matches it, best first, as you type, so it can be completed step by step, and opens
 //! any file on the Mac, after `>` too.
 
 use std::{
@@ -147,11 +147,10 @@ fn path_split(text: &str) -> (PathBuf, String, String) {
     }
 }
 
-/// Entries of `dir` whose name starts with `partial` (case ignored), by name, each
-/// with the chars the partial covers; an empty partial lists the folder whole.
+/// Entries of `dir` whose name matches `partial` fuzzily, best first (ties by name),
+/// each with the matched chars; an empty partial lists the folder whole, by name.
 fn path_entries(dir: &Path, partial: &str) -> Vec<(PathBuf, Vec<usize>)> {
-    let want = partial.to_lowercase();
-    let mut found: Vec<(PathBuf, Vec<usize>)> = std::fs::read_dir(dir)
+    let mut found: Vec<(i64, PathBuf, Vec<usize>)> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
@@ -161,24 +160,24 @@ fn path_entries(dir: &Path, partial: &str) -> Vec<(PathBuf, Vec<usize>)> {
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            name.to_lowercase().starts_with(&want).then(|| {
-                let marks = (0..partial.chars().count())
-                    .filter(|at| *at < name.chars().count())
-                    .collect();
-                (path, marks)
-            })
+            fuzzy::score(partial, &name).map(|(score, positions)| (score, path, positions))
         })
         .collect();
     found.sort_by(|a, b| {
-        a.0.file_name()
-            .map(|name| name.to_string_lossy().to_lowercase())
-            .cmp(
-                &b.0.file_name()
-                    .map(|name| name.to_string_lossy().to_lowercase()),
-            )
+        b.0.cmp(&a.0).then_with(|| {
+            a.1.file_name()
+                .map(|name| name.to_string_lossy().to_lowercase())
+                .cmp(
+                    &b.1.file_name()
+                        .map(|name| name.to_string_lossy().to_lowercase()),
+                )
+        })
     });
     found.truncate(PATH_LIMIT);
     found
+        .into_iter()
+        .map(|(_, path, positions)| (path, positions))
+        .collect()
 }
 
 /// `12` or `12:5` as a line and column.
@@ -946,12 +945,15 @@ mod tests {
     }
 
     #[test]
-    fn path_entries_should_list_what_a_prefix_names() {
+    fn path_entries_should_list_what_matches() {
         let dir = std::env::temp_dir().join(format!("kiled-path-entries-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".killi")).unwrap();
         std::fs::write(dir.join(".killi/config.toml"), "").unwrap();
+        std::fs::create_dir_all(dir.join("proj")).unwrap();
         std::fs::write(dir.join("notes.txt"), "").unwrap();
+        std::fs::write(dir.join("proj/main.rs"), "").unwrap();
+        std::fs::write(dir.join("proj/machine.rs"), "").unwrap();
         std::fs::write(dir.join(".hidden"), "").unwrap();
         let names = |dir: &Path, partial: &str| -> Vec<String> {
             path_entries(dir, partial)
@@ -967,17 +969,24 @@ mod tests {
                 names(&dir, "NOT"),
                 names(&dir, "zzz"),
                 names(&dir.join(".killi"), "con"),
+                names(&dir, "kli"),
+                names(&dir, "nt"),
+                names(&dir.join("proj"), "mn"),
             ],
             [
                 vec![".killi".to_owned()],
                 vec![
                     ".hidden".to_owned(),
                     ".killi".to_owned(),
-                    "notes.txt".to_owned()
+                    "notes.txt".to_owned(),
+                    "proj".to_owned()
                 ],
                 vec!["notes.txt".to_owned()],
                 Vec::new(),
                 vec!["config.toml".to_owned()],
+                vec![".killi".to_owned()],
+                vec!["notes.txt".to_owned()],
+                vec!["main.rs".to_owned(), "machine.rs".to_owned()],
             ]
         );
         assert_eq!(
